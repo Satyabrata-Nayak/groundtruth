@@ -1,0 +1,44 @@
+{
+  "model": "qwen3:8b",
+  "reasoning": "default",
+  "timestamp": "2026-08-27 01:04:45",
+  "latency": {
+    "cold_load_s": 11.07,
+    "ttft_any_median_s": 0.68,
+    "ttft_answer_median_s": 20.36,
+    "wall_median_s": 30.95,
+    "tokens_per_sec_median": 9.4,
+    "thinking_share_median": 0.612
+  },
+  "structured": {
+    "freeform": {
+      "valid": 10,
+      "total": 10,
+      "pct": 100.0,
+      "failures": []
+    },
+    "constrained": {
+      "valid": 10,
+      "total": 10,
+      "pct": 100.0,
+      "failures": []
+    }
+  },
+  "tools": {
+    "emitted": 15,
+    "correct_tool": 15,
+    "valid_args": 15,
+    "total": 15,
+    "pct": 100.0,
+    "failures": []
+  },
+  "sql": {
+    "correct": 10,
+    "total": 10,
+    "pct": 100.0,
+    "clean_output": 10,
+    "salvaged": 0,
+    "failures": []
+  },
+  "total_bench_s": 3097.2
+}
