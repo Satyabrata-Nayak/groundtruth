@@ -373,3 +373,176 @@ bug that only appears on cold-start machines and never on yours.
 
 `pg_isready` is the correct probe here because it tests the thing we actually depend
 on (the server accepting connections), not a proxy for it like "is the process alive."
+
+---
+
+# M2
+
+## 9. OLTP vs OLAP — why this project runs two databases
+
+The obvious objection to the architecture is "you already have DuckDB, why also run
+Postgres?" They are built for opposite workloads, and using either for the other's job
+is genuinely bad.
+
+```
+                    PostgreSQL  (OLTP)          DuckDB  (OLAP)
+                    ──────────────────          ───────────────
+storage             row-oriented                column-oriented
+optimised for       many small reads/writes     few enormous scans
+typical query       "give me order #4821"       "average revenue over 5M rows"
+runs as             a server, always on         a library, inside your process
+concurrent writers  hundreds, safely            effectively one
+transactions        full ACID, row locks        minimal
+```
+
+**Row-oriented** means one record's fields are stored together, so fetching a single
+order touches one place on disk. **Column-oriented** means all values of one column are
+stored together, so summing `revenue` over five million rows reads one contiguous run
+of numbers and never touches the other columns at all. Each layout is close to optimal
+for its workload and poor for the other.
+
+In this project:
+
+```
+Postgres   what datasets exist, versions, profiles, later the job queue and claims
+Parquet    the actual rows — read only by DuckDB, never by Postgres
+```
+
+A 5,000-row dataset produces **8 rows** of Postgres metadata. The ratio only improves
+with size.
+
+### The requirement that settles it
+
+M4 needs several worker processes each claiming the next analysis job, with no two ever
+claiming the same one:
+
+```sql
+SELECT * FROM analyses WHERE status = 'PENDING'
+FOR UPDATE SKIP LOCKED LIMIT 1;
+```
+
+Row-level locks, real transactions, many concurrent writers. **DuckDB has no
+equivalent** — that is not a flaw, it is simply not a coordination database. And the
+reverse substitution is just as bad: a `GROUP BY` over millions of rows in Postgres
+would be far slower than DuckDB reading Parquet.
+
+---
+
+## 10. Two stores that cannot commit together
+
+Writing a Parquet file and inserting a database row cannot be one atomic operation:
+the filesystem has no transactions. So a crash between them leaves an inconsistent
+state, and the design question is *which* inconsistency to accept.
+
+```
+file without a row      invisible to every listing, occupies disk forever,
+                        findable only by walking directories
+row without a file      appears in listings, looks healthy, fails only when
+                        someone finally queries it
+```
+
+The second is worse — a broken record that advertises itself as working. So:
+
+```
+create:   write Parquet ──► commit metadata ──► on failure, delete the Parquet
+delete:   delete rows   ──► then delete files
+```
+
+Both orders follow the same rule: **the database is the source of truth about what
+exists, so never let it point at something that is not there.** An orphaned file is
+recoverable by hand; a dangling reference corrupts every listing that touches it.
+
+This is the same reasoning behind ordinary write-ahead logging, at a much smaller scale.
+
+---
+
+## 11. HyperLogLog, and estimates wearing the name of counts
+
+DuckDB's `SUMMARIZE` reports `approx_unique`, which sounds like a distinct count and is
+not one. It is **HyperLogLog**: a probabilistic sketch that estimates cardinality in
+fixed memory — a few kilobytes regardless of whether it is counting a thousand values
+or a billion. It works by hashing each value and tracking the longest run of leading
+zeros seen; long runs are unlikely, so seeing one implies many distinct values.
+
+Brilliant, and wrong for this use. Measured here:
+
+```
+30 rows, 30 genuinely distinct values
+approx_unique      →  27      (10% error)
+count(DISTINCT x)  →  30
+```
+
+At small N the error is proportionally large, and it was enough to flip a
+high-cardinality threshold during development.
+
+**The rule this project follows:** an estimate may be *displayed*, but never *stored in
+a field named like a count* and never used in arithmetic. The same argument had already
+forced exact null counts (SUMMARIZE's `null_percentage` is pre-rounded — 0.4% of 2.4M
+rows is off by thousands), so accepting an estimate here would have been inconsistent.
+
+Use HLL when you have billions of values and need an answer in constant memory. Do not
+use it when the exact answer costs one extra scan at ingest time.
+
+---
+
+## 12. Prepared statements do not work everywhere
+
+Parameterised queries (`?` placeholders) are the standard defence against SQL
+injection, and the reflex is to use them for every value. But they are only supported
+where the engine can plan around a value it does not yet know — and that is not
+everywhere. Two failures hit this project:
+
+```sql
+COPY (SELECT * FROM read_csv(?)) TO ?          -- misbinds SILENTLY; DuckDB tried to
+                                               -- READ the destination path
+CREATE VIEW dataset AS SELECT * FROM read_parquet(?)
+                                               -- "This type of statement can't be prepared"
+```
+
+The first is the dangerous one: no error, just wrong behaviour, and it took reading a
+confusing "no files found" message to notice.
+
+The reason is that a prepared parameter is a *value* in a query plan. A `COPY` target
+and a `CREATE VIEW` body are part of the statement's **structure**, decided at plan time,
+so there is nothing to substitute into.
+
+**What to do instead.** Where parameters are unavailable, inline only values you
+generated yourself — here, paths built from a validated UUID — and still escape them.
+`storage.sql_path_literal()` doubles embedded quotes even though its inputs are
+server-generated, because a function cannot verify that its caller kept that promise.
+
+Never conclude "parameters do not work here, so user input can be interpolated." The
+correct conclusion is "this position cannot accept user input at all."
+
+---
+
+## 13. Allowlists beat blocklists — and the mistake I made one level down
+
+The sandbox rejects SQL by parsing it and requiring the root node to be a SELECT. This
+is an allowlist, and it exists because keyword blocklists lose to comments, nesting and
+string literals:
+
+```sql
+SELECT 1; /*x*/ DROP TABLE t
+WITH a AS (SELECT 1) SELECT * FROM read_csv('~/.ssh/id_rsa')
+```
+
+Having got that right at the statement level, I then wrote a **blocklist of function
+names** for table functions (`read_csv`, `read_parquet`, `glob`, ...) — and it silently
+failed, because sqlglot parses `read_csv` and `read_parquet` into *dedicated AST
+classes* (`ReadCSV`, `ReadParquet`) rather than the generic function node the check
+looked for. The two most obvious attacks slipped past L1 entirely. L2 stopped them, but
+only because the layering existed.
+
+The fix was not to add two names. It was to notice the check had the wrong *shape*:
+
+```
+blocklist:  reject FROM sources whose function name is in a list I wrote
+allowlist:  require every FROM source to be a plain identifier
+```
+
+The second rejects every table-valued function, including ones that do not exist yet.
+
+**The transferable lesson:** knowing the principle is not the same as applying it
+everywhere it applies. I had written the allowlist argument into a design document and
+then implemented a blocklist two functions later, in the same file.

@@ -292,3 +292,159 @@ more verbosely when it cannot deliberate separately), and it destroys output str
 context in a multi-turn loop. Watch this in M5: reasoning traces from earlier turns
 should NOT be fed back into subsequent requests, or context will grow far faster than
 necessary.
+
+---
+
+## D-010 — SQL is executed in a four-layer sandbox, verified empirically
+
+**Decision.** Every query runs through: (L1) a sqlglot AST allowlist, (L2) a DuckDB
+connection with filesystem and network access disabled and its configuration locked,
+(L3) exactly one dataset registered as a view, (L4) row/byte/time limits.
+
+**Why.** In M5 this SQL is written by a language model that can be steered by text
+inside the dataset itself. "The model would not write that" is not a security control.
+
+The layers are not redundant — each covers what the others miss:
+
+```
+L1  structure    rejects DROP, multi-statement injection, CTE-wrapped writes,
+                 table functions. Produces a CLEAR message, which matters because
+                 that message is fed back to a model for repair.
+L2  capability   the engine cannot reach the filesystem at all. THIS is what makes
+                 it safe; L1 and L3 make it explainable.
+L3  scope        the model supplies a dataset_id; no path ever appears in SQL.
+L4  resource     a legal query cannot hang a worker or exhaust memory.
+```
+
+**The recipe, and why the order matters.** Verified against DuckDB 1.5.5:
+
+```sql
+SET memory_limit / threads          -- FIRST: frozen by the lock below
+SET allowed_paths = ['<parquet>']   -- the one file that stays readable
+SET enable_external_access = false  -- everything else off
+SET lock_configuration = true       -- the query cannot undo any of the above
+```
+
+The naive approach — `enable_external_access=false` alone — also blocks reading our own
+Parquet file. `allowed_paths` is documented as files "ALWAYS allowed to be queried, even
+when external access is disabled", which is exactly the exception needed.
+
+Measured after lockdown: reading any other path, `read_text`/`read_blob`/`glob`,
+`COPY` out, `ATTACH` of a file database, `INSTALL`, http(s) URLs, and re-enabling
+external access **all fail**. Only harmless introspection survives, and L1 rejects that
+anyway.
+
+**Alternatives considered.** (1) Keyword blocklist. (2) Materialise the dataset into
+memory, then disable all file access. (3) Trust the model.
+
+**Why rejected.** (1) loses to comments, nesting and string literals —
+`SELECT 1; /*x*/ DROP TABLE t` defeats it. (2) would work but forfeits the reason for
+using Parquet: streaming multi-million-row files without loading them. (3) is not a
+control.
+
+**Tradeoffs.** A fresh connection and view per query costs a few milliseconds. Measured
+at ~11 ms for a group-by over 5,000 rows end to end, which is irrelevant next to a
+15-second model call.
+
+---
+
+## D-011 — Table functions are rejected structurally, not by name
+
+**Decision.** L1 requires every table reference in the AST to be a plain identifier.
+Any table-valued function in `FROM` is refused.
+
+**Why.** The first implementation blocklisted function names (`read_csv`,
+`read_parquet`, `glob`, ...) by looking for sqlglot `Anonymous` nodes. It silently
+missed the two most important ones: sqlglot gives `read_csv` and `read_parquet`
+**dedicated AST classes** (`ReadCSV`, `ReadParquet`) which are not `Anonymous` at all.
+L2 blocked the query anyway — defence in depth working — but a check that misses the
+obvious cases is not a check.
+
+Adding two names would have fixed the symptom. The real problem is that a name list
+only blocks functions someone thought of, and DuckDB ships many table functions with
+extensions adding more. Since this sandbox exposes exactly ONE table, the correct rule
+is structural: a table reference must be an identifier. That rejects every
+table-valued function, including ones that do not exist yet.
+
+**Tradeoffs.** Legitimate generators like `range()` and `generate_series()` are also
+refused. Acceptable: no analytical question about a dataset needs them, and the M1
+benchmark showed the model reaching for plain `SELECT ... FROM dataset` anyway. If a
+real need appears, the fix is an explicit allowlist of specific safe functions — the
+opposite direction from a blocklist.
+
+---
+
+## D-012 — Profile statistics are computed exactly, never estimated
+
+**Decision.** Null counts and distinct counts use `count(*) FILTER (...)` and
+`count(DISTINCT ...)`, not SUMMARIZE's `null_percentage` and `approx_unique`.
+
+**Why.** `approx_unique` is a HyperLogLog estimate. Measured on a 30-row fixture with
+30 genuinely distinct values, it returned **27** — a 10% error, which was enough to
+flip a high-cardinality threshold during development. `null_percentage` is
+pre-rounded: 0.4% of 2.4M rows rounds to a figure off by thousands.
+
+These numbers are shown to users and, in M5, reasoned over by the agent before it
+answers. An estimate stored in a field named `distinct_count` is a small lie that
+propagates into every conclusion drawn from it.
+
+**Tradeoffs.** `count(DISTINCT ...)` across every column is more expensive than
+HyperLogLog. Paid once per ingest, never per query — 5,000 rows × 7 columns profiles in
+well under a second, and the cost scales with ingest, which is already the slow path.
+
+---
+
+## D-013 — PostgreSQL for metadata, Parquet + DuckDB for data
+
+**Decision.** Postgres stores what datasets exist, their versions and their profiles.
+The rows themselves live in Parquet and are read only by DuckDB. Postgres never touches
+a data row.
+
+**Why.** They are built for opposite workloads:
+
+```
+                 PostgreSQL                 DuckDB
+shape            row-oriented               column-oriented
+built for        many small reads/writes    few huge scans
+concurrency      many writers, ACID         one process, effectively read-only
+our use          the catalogue              the compute
+```
+
+The decisive requirement is M4's job queue: several workers must each claim the next
+analysis with no two claiming the same one, which needs `SELECT ... FOR UPDATE SKIP
+LOCKED`, row locks and real transactions. DuckDB has no equivalent — it is an
+analytical engine for one process, not a coordination point for many. Conversely, a
+`GROUP BY` over millions of rows in Postgres would be far slower than DuckDB reading
+Parquet.
+
+A 5,000-row dataset produces 8 rows of Postgres metadata. The ratio only improves with
+size.
+
+**Tradeoffs.** Two stores that cannot be committed atomically. Handled in D-014.
+
+---
+
+## D-014 — Write the file first, commit metadata second, roll back the file on failure
+
+**Decision.** `create_dataset` writes Parquet, then commits the database transaction,
+and deletes the Parquet file if the commit fails.
+
+**Why.** Two stores, no distributed transaction. One of the two inconsistent states has
+to be chosen as the one to defend against:
+
+```
+file without a row   invisible to every listing, occupies disk forever,
+                     findable only by walking directories
+row without a file   appears in listings, looks healthy, fails only when
+                     someone finally queries it
+```
+
+The second is worse: it is a broken record that advertises itself as working. So the
+file is written first and removed on failure, and a crash between the two leaves at
+worst an orphaned file — recoverable, and never surfaced to a user as a real dataset.
+
+Deletion runs in the opposite order for the same reason: database first, then files.
+
+**Tradeoffs.** A hard process kill between the file write and the commit still leaves an
+orphan. A future sweeper can reconcile directories against the database; not worth
+building until it happens.

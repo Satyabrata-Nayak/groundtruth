@@ -13,8 +13,13 @@ dependencies = [
     "sqlalchemy>=2.0",         # Postgres access; needed for FOR UPDATE SKIP LOCKED in M4
     "alembic>=1.13",           # schema migrations, versioned from the first table
     "psycopg[binary]>=3.1",    # Postgres driver (v3; binary wheel avoids a C toolchain on Windows)
-    "duckdb>=1.0",             # M1: bench grades generated SQL by EXECUTING it, not by regex.
-                               # M2 onward: the analytical query engine itself.
+    "duckdb>=1.0",             # M1: bench grades generated SQL by EXECUTING it, not by
+                               # regex. M2 onward: the analytical query engine itself.
+
+    # M2 — SQL safety
+    "sqlglot>=30.17",          # parse SQL to an AST so the executor can ALLOWLIST
+                               # (root node must be SELECT/WITH) instead of blocklisting
+                               # keywords, which comments and nesting defeat.
 ]
 
 [project.optional-dependencies]
@@ -34,6 +39,9 @@ packages = ["app"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Alembic writes these; holding generated code to hand-written style rules means
+# editing every migration after generating it, which invites editing the wrong thing.
+extend-exclude = ["app/db/migrations/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]  # pycodestyle, pyflakes, isort, pyupgrade, bugbear

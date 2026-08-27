@@ -1,7 +1,7 @@
 # Architecture
 
-Current state: **M1 (foundation)**. This document describes the target and marks what
-exists today.
+Current state: **data layer complete, no AI yet**. This document describes the target
+and marks what exists today.
 
 ---
 
@@ -26,7 +26,7 @@ evidence-backed result showing every step it took.
                 ┌─────────────┴─────────────┐
                 ▼                           ▼
           PostgreSQL                  Analysis Worker    [M4]
-       [M1 running, empty]            python -m app.worker
+       [M2: datasets + profiles]      python -m app.worker
         · dataset metadata                  │
         · analysis jobs (queue)             ├── Agent loop          [M5]
         · execution events                  │      │
@@ -41,7 +41,7 @@ evidence-backed result showing every step it took.
                                             │      · create_chart
                                             │      · detect_anomalies   [M6]
                                             │
-                                            ├── DuckDB (sandboxed)  [M2]
+                                            ├── DuckDB (sandboxed)  [M2 ✓]
                                             │      └── reads Parquet, read-only
                                             ├── SciPy / scikit-learn [M6]
                                             └── Verification layer   [M6]
@@ -100,24 +100,57 @@ backend maps that to a trusted path.
 
 ---
 
-## What exists after M1
+## What exists after M2
 
 ```
 app/config.py              typed settings from .env, single source of truth
-app/db/base.py             DeclarativeBase — all models inherit from this
-app/db/models.py           empty by design; single import point for metadata
+app/db/base.py             DeclarativeBase
+app/db/models.py           Dataset, DatasetVersion, ColumnProfile
+app/db/session.py          engine, pooled connections, transactional session_scope
 app/db/migrations/         Alembic, URL injected from app.config
+app/data/storage.py        dataset_id -> path. THE TRUST BOUNDARY.
+app/data/ingest.py         validate, CSV->Parquet, immutable versioning
+app/data/profile.py        row/column stats, exact null and distinct counts, flags
+app/data/sandbox.py        four-layer read-only SQL executor
+app/data/service.py        create/list/get/delete — the operations the API will call
 docker-compose.yml         Postgres 16 on host port 5433, health-checked
 scripts/bench_model.py     the M1 deliverable: measures the model choice
 scripts/bench_report.py    renders raw runs into the docs comparison table
-tests/                     10 tests: config, SQL extraction (incl. CTE regression)
-docs/                      decisions, learning notes, benchmarking, architecture
+tests/                     139 tests, incl. a 30-query SQL attack corpus
+docs/                      decisions D-001..D-014, learning notes, benchmarking
 ```
 
 **Model selected: `qwen3:4b`, reasoning enabled** (D-006, D-009). Measured 53.8 tok/s
 fully GPU-resident, 100% on JSON planning, tool selection, tool arguments and SQL
-correctness. `qwen3:8b` matched every capability metric but ran 5.7× slower because it
+correctness. `qwen3:8b` matched every capability metric but ran 5.7x slower because it
 cannot fit alongside a KV cache and spills 38% of its layers to system RAM.
 
-Deliberately absent: FastAPI, any HTTP route, any tool, any LLM client in `app/`.
-M1's job was the environment and the model decision, and nothing else.
+Deliberately absent: FastAPI, any HTTP route, any agent tool, any LLM client in `app/`.
+M2's job was to make deterministic analysis correct before any AI exists.
+
+---
+
+## The M2 data path, as built
+
+```
+  file (CSV / Parquet)
+        |
+        v  ingest.validate_source      size cap, extension, non-empty
+        v  ingest._convert_csv_to_parquet   sample_size=-1: full-file type inference
+        v  storage.allocate_version_dir     mkdir(exist_ok=False) -> atomic claim
+        |
+   data/datasets/<uuid>/v<n>/data.parquet   IMMUTABLE once written
+        |
+        v  profile.profile_parquet     SUMMARIZE + exact nulls/distincts + duplicates
+        v  service.create_dataset      commit metadata; delete the file if that fails
+        |
+   PostgreSQL: datasets / dataset_versions / column_profiles
+        |
+        v  sandbox.execute_sql(dataset_id, version, sql)
+             L1 sqlglot allowlist  -> L2 confined DuckDB -> L3 one view -> L4 limits
+        |
+   QueryResult(columns, rows, truncated, execution_ms)
+```
+
+Measured end to end on a 5,000-row dataset: ingest + profile + persist, then a
+grouped profit-margin query returning in ~11 ms.

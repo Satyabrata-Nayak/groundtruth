@@ -34,6 +34,19 @@ class Settings(BaseSettings):
     # --- Storage ---
     data_dir: Path = Field(default=Path("./data/datasets"))
 
+    # --- Ingestion limits ---
+    # A cap that a human upload will not hit but a runaway or hostile one will.
+    max_upload_mb: int = 512
+
+    # --- Query limits ---
+    # These are not performance tuning. They bound the damage a bad or hostile query
+    # can do, and they are enforced before the query runs where possible.
+    query_timeout_s: float = 30.0
+    max_result_rows: int = 10_000
+    max_result_bytes: int = 10 * 1024 * 1024
+    duckdb_memory_limit: str = "2GB"
+    duckdb_threads: int = 4
+
     @property
     def database_url(self) -> str:
         """SQLAlchemy connection URL.

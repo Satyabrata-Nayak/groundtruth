@@ -103,7 +103,7 @@ correctness on your hardware. Results for the reference machine are in
 | | |
 |---|---|
 | **Foundation** | environment, PostgreSQL + migrations, local model evaluation — **done** |
-| **Data layer** | CSV/Parquet ingestion, profiling, sandboxed DuckDB SQL execution |
+| **Data layer** | CSV/Parquet ingestion, profiling, sandboxed DuckDB SQL execution — **done** |
 | **Tools + evaluation** | deterministic tool registry, golden question set with hand-written reference SQL |
 | **Application** | FastAPI, durable PostgreSQL job queue, web UI |
 | **Agent** | tool-calling loop, execution trace, graded continuously against the evaluation set |
