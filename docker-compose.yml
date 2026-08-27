@@ -1,0 +1,32 @@
+# M1: Postgres only.
+# The backend, worker and frontend run natively during development (faster edit-reload
+# loop, and this laptop has 15.8 GB RAM total — we do not spend it on containers we
+# do not need). Full containerization lands in M6.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: adi_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-adi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-adi_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-adi}
+    ports:
+      # Host 5433 -> container 5432. Deliberately not 5432: avoids colliding with any
+      # Postgres already installed on the host, and makes it obvious which one we mean.
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # Compose reports the container "healthy" only once Postgres actually accepts
+      # connections. Without this, `docker compose up` returns while the DB is still
+      # starting and the first app connection fails with a confusing error.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-adi} -d ${POSTGRES_DB:-adi}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  postgres_data:

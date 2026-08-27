@@ -1,0 +1,47 @@
+[project]
+name = "ai-data-analyser"
+version = "0.1.0"
+description = "Local-first AI data analysis platform: deterministic tools, LLM tool-calling, verified answers"
+requires-python = ">=3.12"
+
+# Every dependency here needs a concrete reason. Added per-milestone, not up front.
+dependencies = [
+    # M1 — talk to Ollama, load config, own the Postgres schema
+    "httpx>=0.27",             # HTTP client for the Ollama API (sync + async, one library)
+    "pydantic>=2.7",           # schema definition + validation, used everywhere later
+    "pydantic-settings>=2.3",  # typed config from .env, no scattered os.getenv calls
+    "sqlalchemy>=2.0",         # Postgres access; needed for FOR UPDATE SKIP LOCKED in M4
+    "alembic>=1.13",           # schema migrations, versioned from the first table
+    "psycopg[binary]>=3.1",    # Postgres driver (v3; binary wheel avoids a C toolchain on Windows)
+    "duckdb>=1.0",             # M1: bench grades generated SQL by EXECUTING it, not by regex.
+                               # M2 onward: the analytical query engine itself.
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",               # linter + formatter in one tool
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]  # pycodestyle, pyflakes, isort, pyupgrade, bugbear
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    # Tests needing live infrastructure (Postgres, Ollama). Skip with -m "not integration".
+    "integration: requires running external services",
+]

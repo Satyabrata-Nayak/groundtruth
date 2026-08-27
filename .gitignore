@@ -1,0 +1,42 @@
+# --- Secrets ---
+.env
+.env.local
+*.pem
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- Node ---
+node_modules/
+dist/
+.vite/
+
+# --- Project data (never commit datasets or model files) ---
+data/datasets/
+*.parquet
+*.duckdb
+*.duckdb.wal
+!eval/questions/**/*.parquet
+
+# --- Internal working documents (not project documentation) ---
+# These describe how the work is being planned and learned, not how the system works.
+# The durable content lives in docs/decisions.md and the README roadmap.
+IMPLEMENTATION_PLAN.md
+AI_Data_Intelligence_Platform_MVP_Roadmap.md
+
+# NOTE: scripts/_bench_raw/*.json IS committed on purpose — it is the raw evidence
+# behind every number in docs/benchmarking.md, and a reader should be able to check it.
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/settings.json
