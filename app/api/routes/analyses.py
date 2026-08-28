@@ -31,6 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agent.models import BY_NAME, is_selectable
 from app.api.deps import get_session
 from app.api.schemas import AnalysisCreate, AnalysisOut, EventOut, EventPage
 from app.data import service
@@ -67,12 +68,24 @@ def create_analysis(
 
     version = _resolve_version(session, payload)
 
+    # An ALLOWLIST, not a passthrough. `model` is a string from a browser; handing it
+    # to Ollama unchecked would let any request pull and load an arbitrary model on the
+    # host, which is a resource-exhaustion hole rather than a feature. An operator can
+    # still run anything through LLM_MODEL; a request may only name what was measured.
+    if payload.model is not None and not is_selectable(payload.model):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"unknown model {payload.model!r}. Choose one of: {', '.join(sorted(BY_NAME))}",
+        )
+
     analysis, created = queue.enqueue(
         session,
         dataset_id=dataset.id,
         dataset_version=version,
         question=payload.question.strip(),
         idempotency_key=payload.idempotency_key,
+        llm_model=payload.model,
+        llm_thinking=payload.thinking,
     )
     if not created:
         response.status_code = status.HTTP_200_OK

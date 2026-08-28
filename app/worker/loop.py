@@ -173,6 +173,10 @@ class Worker:
                     question=claimed.question,
                     emit=emit,
                     checkpoint=beat.checkpoint,
+                    # What the asker chose, pinned on the row at ask time. None for
+                    # either falls back to this worker's configuration.
+                    llm_model=claimed.llm_model,
+                    llm_thinking=claimed.llm_thinking,
                 )
             except StopRequested as stop:
                 self._handle_stop(claimed, stop)

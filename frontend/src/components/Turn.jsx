@@ -64,7 +64,12 @@ export default function Turn({ turn, onStatusChange }) {
 
             {result.chart && <Chart chart={result.chart} />}
             <DataTable table={result.table} />
-            <Steps steps={result.steps} engine={result.engine} />
+            <Steps
+              steps={result.steps}
+              engine={result.engine}
+              model={result.model}
+              thinking={result.thinking}
+            />
           </>
         )}
 

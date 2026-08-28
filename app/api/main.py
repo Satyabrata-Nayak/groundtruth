@@ -24,7 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from app.api.routes import analyses, datasets
+from app.api.routes import analyses, datasets, models
 from app.api.schemas import HealthOut
 from app.config import get_settings
 from app.data.ingest import IngestError
@@ -58,6 +58,7 @@ app.add_middleware(
 
 app.include_router(datasets.router)
 app.include_router(analyses.router)
+app.include_router(models.router)
 
 
 # --------------------------------------------------------------------------------

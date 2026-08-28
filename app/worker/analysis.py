@@ -88,11 +88,17 @@ def run_analysis(
     question: str,
     emit: Emit,
     checkpoint: Checkpoint,
+    llm_model: str | None = None,
+    llm_thinking: bool | None = None,
 ) -> dict[str, Any]:
     """Run the configured engine and return the result payload.
 
     The worker calls only this. Which engine runs is configuration, not a decision made
     at the call site, so switching one off never means editing the worker.
+
+    `llm_model` and `llm_thinking` are what the ASKER chose, pinned on the row when the
+    question was queued. The fixed engine ignores them, which is correct: it has no
+    model to choose.
     """
     if get_settings().analysis_engine == "fixed":
         emit(EventKind.NOTE, "running the fixed analysis (no model)", {"engine": FIXED_ENGINE})
@@ -109,6 +115,8 @@ def run_analysis(
         question=question,
         emit=emit,
         checkpoint=checkpoint,
+        llm_model=llm_model,
+        llm_thinking=llm_thinking,
     )
 
 

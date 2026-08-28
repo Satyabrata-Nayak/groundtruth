@@ -12,7 +12,7 @@ import { formatMillis, formatSql } from '../format'
 //
 // Collapsed by default because a correct answer is the common case and the trace is
 // then noise. One click away because when it matters, it matters completely.
-export default function Steps({ steps, engine }) {
+export default function Steps({ steps, engine, model, thinking }) {
   if (!steps?.length) return null
 
   return (
@@ -25,9 +25,18 @@ export default function Steps({ steps, engine }) {
           // eslint-disable-next-line react/no-array-index-key -- steps have no id
           <Step key={index} step={step} />
         ))}
+        {/* Which model answered THIS question, not what the picker is set to now.
+            Two answers to the same question can differ for no other reason. */}
         <p className="trace-foot">
-          Answered by <code>{engine}</code>. Every figure above came out of DuckDB; the
-          model chose what to compute and computed nothing.
+          Answered by <code>{engine}</code>
+          {model ? (
+            <>
+              {' '}using <code>{model}</code>
+              {thinking === false ? ' with reasoning off' : ''}
+            </>
+          ) : null}
+          . Every figure above came out of DuckDB; the model chose what to compute and
+          computed nothing.
         </p>
       </div>
     </details>

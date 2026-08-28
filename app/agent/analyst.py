@@ -102,6 +102,8 @@ def run_agent_analysis(
     question: str,
     emit: Emit,
     checkpoint: Checkpoint,
+    llm_model: str | None = None,
+    llm_thinking: bool | None = None,
     client: LlmClient | None = None,
     registry: ToolRegistry | None = None,
 ) -> dict[str, Any]:
@@ -116,7 +118,11 @@ def run_agent_analysis(
     context = ToolContext(dataset_id=dataset_id, version=version)
 
     owns_client = client is None
-    client = client or LlmClient()
+    # The asker's choice wins over configuration; configuration wins over the model's
+    # own default. `llm_thinking` is tri-state — None means "nobody said", which is not
+    # the same as False, and collapsing them would silently disable reasoning for every
+    # request that did not mention it.
+    client = client or LlmClient(model=llm_model, think=llm_thinking)
     try:
         return _run(
             client=client,
@@ -289,6 +295,11 @@ def _run(
 
     return {
         "engine": ENGINE,
+        # Which model actually answered. `engine` says "an agent did this"; this says
+        # which one, and two answers to the same question can differ for no reason
+        # other than this field.
+        "model": client.model,
+        "thinking": client.think,
         "question": question,
         "dataset": {"id": str(dataset_id), "version": version},
         "answer": answer,

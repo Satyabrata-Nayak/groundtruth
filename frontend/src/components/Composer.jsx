@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import ModelPicker from './ModelPicker'
 
 // The primary action, in the place a chat application puts it.
 //
@@ -10,7 +11,7 @@ import { useEffect, useRef, useState } from 'react'
 // It is DISABLED while an analysis runs, and says why. There is one worker: a second
 // question would sit PENDING behind the first for two minutes and look like a hang.
 // Refusing it with a reason is better than accepting it and appearing broken.
-export default function Composer({ dataset, busy, onAsk }) {
+export default function Composer({ dataset, busy, onAsk, models, model, thinking, onModel, onThinking }) {
   const [text, setText] = useState('')
   const box = useRef(null)
 
@@ -64,9 +65,16 @@ export default function Composer({ dataset, busy, onAsk }) {
         </div>
 
         <div className="composer-hint">
-          <span>
+          <ModelPicker
+            models={models}
+            value={model}
+            thinking={thinking}
+            onModel={onModel}
+            onThinking={onThinking}
+          />
+          <span className="composer-note">
             {busy
-              ? 'Working on your question — one at a time, on one local worker.'
+              ? 'Working — one question at a time, on one local worker.'
               : 'Every number is computed by the database, never recalled by the model.'}
           </span>
           <span>

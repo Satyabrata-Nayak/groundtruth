@@ -299,6 +299,19 @@ class Analysis(Base):
     dataset_version: Mapped[int] = mapped_column(Integer, nullable=False)
     question: Mapped[str] = mapped_column(Text, nullable=False)
 
+    # WHICH MODEL ANSWERED, PINNED THE SAME WAY THE DATASET VERSION IS.
+    #
+    # Stored on the row rather than read from configuration when the worker picks it
+    # up, for the same reason `dataset_version` is: the answer has to stay explicable
+    # later. Two analyses of the same question can legitimately disagree because one
+    # was asked of a 3B model and one of a 4B, and a result that cannot say which is a
+    # result nobody can act on. NULL means "whatever the worker was configured with",
+    # which is what every row written before this column existed means.
+    llm_model: Mapped[str | None] = mapped_column(String(128))
+    # Tri-state on purpose. True/False are an explicit choice by the asker; NULL means
+    # they expressed none and the model's own default applies.
+    llm_thinking: Mapped[bool | None] = mapped_column(Boolean)
+
     # A caller-supplied key that makes POST /analyses safe to retry. Unique, and
     # nullable: Postgres permits many NULLs in a unique index, so callers that do not
     # care are not forced to invent one. See D-024.

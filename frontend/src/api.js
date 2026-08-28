@@ -32,6 +32,8 @@ export const api = {
 
   listDatasets: () => request('/datasets'),
 
+  listModels: () => request('/models'),
+
   getProfile: (datasetId, version) =>
     request(`/datasets/${datasetId}/profile${version ? `?version=${version}` : ''}`),
 
@@ -47,11 +49,20 @@ export const api = {
     return request('/datasets', { method: 'POST', body: form })
   },
 
-  createAnalysis: (datasetId, question, version) =>
+  // `model` and `thinking` are the asker's choice, pinned onto the row so the answer
+  // stays explicable later. Both null means "use whatever the worker is configured
+  // with", which is not the same as choosing the default explicitly.
+  createAnalysis: (datasetId, question, { version, model, thinking } = {}) =>
     request('/analyses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dataset_id: datasetId, question, version: version ?? null }),
+      body: JSON.stringify({
+        dataset_id: datasetId,
+        question,
+        version: version ?? null,
+        model: model ?? null,
+        thinking: thinking ?? null,
+      }),
     }),
 
   getAnalysis: (id) => request(`/analyses/${id}`),

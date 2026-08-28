@@ -49,8 +49,14 @@ class ScriptedModel:
         available: bool = True,
         error: Exception | None = None,
         exhausted: str = "I have run out of script.",
+        model: str = "scripted-model",
+        think: bool | None = None,
     ):
         self.turns = list(turns)
+        # The real client exposes these and the result payload records them, so a
+        # double that omits them passes its own tests and fails against the code.
+        self.model = model
+        self.think = think
         self.exhausted = exhausted
         self.available = available
         self.error = error
@@ -142,6 +148,8 @@ def test_a_query_then_an_answer_produces_the_shared_result_shape(run, sales_data
 
     assert set(result) == {
         "engine",
+        "model",
+        "thinking",
         "question",
         "dataset",
         "answer",

@@ -176,7 +176,37 @@ const EVENTS = [
   },
 ]
 
+const MODELS = [
+  {
+    name: 'qwen3:4b',
+    label: 'Qwen3 4B',
+    tagline: 'Thinks before answering.',
+    good_at: ['Rankings and totals — 100% on the evaluation set'],
+    weak_at: ['Takes 1-3 minutes per question on a laptop GPU'],
+    speed: '1-3 min',
+    accuracy_pct: 60,
+    reasons: true,
+    size_gb: 2.5,
+    available: true,
+    is_default: true,
+  },
+  {
+    name: 'qwen2.5:3b-instruct',
+    label: 'Qwen2.5 3B',
+    tagline: 'Answers in seconds.',
+    good_at: ['Speed — about 3 seconds instead of two minutes'],
+    weak_at: ['Roughly half the overall accuracy of Qwen3'],
+    speed: '~5s',
+    accuracy_pct: 29,
+    reasons: false,
+    size_gb: 1.9,
+    available: false,
+    is_default: false,
+  },
+]
+
 function routes(url, phase) {
+  if (url.endsWith('/models')) return MODELS
   if (url.endsWith('/healthz')) return { status: 'ok', database: true, version: '0.4.0' }
   if (url.endsWith('/datasets')) return [DATASET]
   if (url.includes('/profile')) return PROFILE
@@ -408,6 +438,40 @@ for (const [kind, chart] of Object.entries(SHAPES)) {
   expect('one figure is a metric, not a table', html.includes('metric-value'))
   expect('one figure gets no <table> furniture', !html.includes('<table'))
   expect('one figure is still labelled', html.includes('corr(Quantity, UnitPrice)'))
+}
+
+// ── 5. the model picker ──────────────────────────────────────────────────────
+
+{
+  const { window, errors } = await render('idle')
+  const root = window.document.getElementById('root')
+
+  expect('no runtime errors with the picker', errors.length === 0, errors.join(' | '))
+  expect('the default model is shown on the trigger', root.querySelector('.picker-trigger')?.textContent.includes('Qwen3 4B'))
+  expect('its speed is on the trigger too', root.querySelector('.picker-trigger')?.textContent.includes('1-3 min'))
+  // The toggle exists only for a model that actually reasons; showing it for one with
+  // no reasoning step would be a control that does nothing.
+  expect('a reasoning toggle is offered for a reasoning model', Boolean(root.querySelector('.toggle')))
+  expect('the menu is closed until asked for', !root.querySelector('.picker-menu'))
+
+  root.querySelector('.picker-trigger').dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true }))
+  root.querySelector('.picker-trigger').dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
+  await new Promise((r) => setTimeout(r, 40))
+  const menu = root.querySelector('.picker-menu')
+
+  expect('the menu opens', Boolean(menu))
+  expect('both models are listed', root.querySelectorAll('.picker-option').length === 2)
+  // The whole point of the menu: numbers, and both sides of the trade.
+  expect('accuracy is shown as a measured number', menu.textContent.includes('60% correct'))
+  expect('the fast model shows its own number', menu.textContent.includes('29% correct'))
+  expect('strengths are listed', menu.textContent.includes('100% on the evaluation set'))
+  expect('weaknesses are listed too', menu.textContent.includes('1-3 minutes per question'))
+  expect('a model that is not pulled says so', menu.textContent.includes('ollama pull qwen2.5:3b-instruct'))
+  expect(
+    'an unavailable model cannot be chosen',
+    [...root.querySelectorAll('.picker-option')].some((o) => o.disabled),
+  )
+  expect('the source of the numbers is named', menu.textContent.includes('eval.runner'))
 }
 
 // ── report ───────────────────────────────────────────────────────────────────

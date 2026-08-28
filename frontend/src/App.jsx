@@ -24,12 +24,39 @@ import Turn from './components/Turn'
 // There are four facts in the whole application: which datasets exist, which is
 // selected, the list of turns, and whether one is running. Reaching for Redux or
 // Zustand at this size is more machinery than the thing it manages.
+// localStorage access throws rather than returning null in a private window or with
+// site data blocked, so both sides are guarded. A remembered dropdown is not worth a
+// blank page.
+function read(key) {
+  try {
+    return window.localStorage.getItem(key) ?? null
+  } catch {
+    return null
+  }
+}
+
+function write(key, value) {
+  try {
+    if (value === null) window.localStorage.removeItem(key)
+    else window.localStorage.setItem(key, value)
+  } catch {
+    // nothing to do: the preference simply will not survive this session
+  }
+}
+
 export default function App() {
   const [datasets, setDatasets] = useState([])
   const [selected, setSelected] = useState(null)
   const [turns, setTurns] = useState([])
   const [health, setHealth] = useState(null)
   const [runningId, setRunningId] = useState(null)
+  const [models, setModels] = useState([])
+  // The chosen model and reasoning flag persist across reloads, because a preference
+  // you have to re-make every visit is not a preference. Wrapped in try/catch: a
+  // private window or blocked site data throws on access rather than returning null,
+  // and a chat app should not fail to start over a remembered dropdown.
+  const [model, setModel] = useState(() => read('gt.model'))
+  const [thinking, setThinking] = useState(() => (read('gt.thinking') === 'false' ? false : null))
   const bottom = useRef(null)
 
   const refresh = useCallback(async () => {
@@ -44,6 +71,10 @@ export default function App() {
       .health()
       .then(setHealth)
       .catch(() => setHealth({ status: 'unreachable', database: false }))
+    api
+      .listModels()
+      .then(setModels)
+      .catch(() => setModels([]))
   }, [refresh])
 
   // Pick the only dataset automatically. Making someone click the single item in a
@@ -61,7 +92,7 @@ export default function App() {
   async function ask(question) {
     if (!selected) return
     try {
-      const analysis = await api.createAnalysis(selected.id, question)
+      const analysis = await api.createAnalysis(selected.id, question, { model, thinking })
       setRunningId(analysis.id)
       setTurns((current) => [...current, { question, analysisId: analysis.id }])
     } catch (err) {
@@ -132,7 +163,22 @@ export default function App() {
           </div>
         </div>
 
-        <Composer dataset={selected} busy={Boolean(runningId)} onAsk={ask} />
+        <Composer
+          dataset={selected}
+          busy={Boolean(runningId)}
+          onAsk={ask}
+          models={models}
+          model={model}
+          thinking={thinking}
+          onModel={(name) => {
+            setModel(name)
+            write('gt.model', name)
+          }}
+          onThinking={(value) => {
+            setThinking(value)
+            write('gt.thinking', value === false ? 'false' : null)
+          }}
+        />
       </main>
     </div>
   )

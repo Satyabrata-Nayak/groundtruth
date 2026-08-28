@@ -92,6 +92,10 @@ class ClaimedAnalysis:
     question: str
     attempts: int
     worker_id: str
+    # What the asker chose, if anything. None for either means "use the worker's
+    # configuration", which is what every row written before the columns existed says.
+    llm_model: str | None = None
+    llm_thinking: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -127,6 +131,8 @@ def enqueue(
     dataset_version: int,
     question: str,
     idempotency_key: str | None = None,
+    llm_model: str | None = None,
+    llm_thinking: bool | None = None,
 ) -> tuple[Analysis, bool]:
     """Add a question to the queue. Returns (analysis, created).
 
@@ -145,6 +151,8 @@ def enqueue(
             dataset_version=dataset_version,
             question=question,
             status=AnalysisStatus.PENDING,
+            llm_model=llm_model,
+            llm_thinking=llm_thinking,
         )
         session.add(analysis)
         session.flush()
@@ -160,6 +168,8 @@ def enqueue(
             question=question,
             idempotency_key=idempotency_key,
             status=AnalysisStatus.PENDING,
+            llm_model=llm_model,
+            llm_thinking=llm_thinking,
         )
         .on_conflict_do_nothing(index_elements=[Analysis.idempotency_key])
         .returning(Analysis.id)
@@ -223,6 +233,11 @@ def claim_next(session: Session, worker_id: str) -> ClaimedAnalysis | None:
             Analysis.dataset_version,
             Analysis.question,
             Analysis.attempts,
+            # The asker's model choice travels with the claim. Stored and then not
+            # returned would be the worst of both worlds: the row would claim an answer
+            # came from a model that never saw the question.
+            Analysis.llm_model,
+            Analysis.llm_thinking,
         )
         .execution_options(synchronize_session=False)
     )
@@ -237,6 +252,8 @@ def claim_next(session: Session, worker_id: str) -> ClaimedAnalysis | None:
         question=row.question,
         attempts=row.attempts,
         worker_id=worker_id,
+        llm_model=row.llm_model,
+        llm_thinking=row.llm_thinking,
     )
     emit(
         session,

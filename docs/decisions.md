@@ -1152,3 +1152,61 @@ computed figure, labelled with the expression that produced it.
 **Tradeoffs.** One more branch in the renderer. The alternative — hiding it entirely
 because the prose repeats it — would mean the one case where the answer and the evidence
 cannot be compared is the case with no evidence displayed.
+
+---
+
+## D-039 — The model is chosen per question, from a catalogue with its measurements attached
+
+**Decision.** `POST /analyses` accepts `model` and `thinking`; both are stored on the
+analysis row and travel with the claim to the worker. `GET /models` returns a catalogue
+with per-model accuracy, speed and weaknesses. The UI is a picker beside the composer.
+
+**Why per question rather than per deployment.** The trade is real and has no right
+answer, measured on this project's own evaluation set:
+
+```
+                     qwen3:4b     qwen2.5:3b-instruct
+  overall              60%              29%
+  lookup              100%              75%
+  aggregation         100%              58%
+  trend                50%               0%
+  data quality         50%              12%
+  comparison            0%               0%
+  diagnosis             0%               0%
+  per question        ~150 s            ~3 s
+```
+
+Fifty times faster for roughly half the accuracy. Which side of that a person wants
+depends on the question they are about to ask — "which country earns most" is answered
+correctly by both, and one of them does it in ten seconds. That is a decision for the
+asker, and `LLM_MODEL` in a `.env` file cannot express it.
+
+**Why the menu carries numbers rather than adjectives.** Every model picker says "fast"
+and "smart", and neither helps. The real question is "will this answer MY question, and
+how long will I wait". Both halves are measured, so both are printed — including what
+each model is BAD at. A chooser that lists only strengths is an advert, and the user is
+picking between two things that are each bad at something.
+
+**Why it is an allowlist.** `model` arrives as a string in a JSON body from a browser.
+Passing it to Ollama would let any request pull and load an arbitrary model on the host
+— resource exhaustion, not a feature. An operator can still run anything through
+`LLM_MODEL`; a request may only name what has been measured.
+
+**Why it is stored on the row.** For the same reason `dataset_version` is. Two answers
+to the same question can legitimately differ because one was asked of a 3B model and one
+of a 4B, and a stored answer that cannot say which is one nobody can act on. NULL means
+"whatever the worker was configured with", which is also what every row written before
+these columns existed means.
+
+**The reasoning toggle is offered, and labelled honestly.** It appears only for a model
+that reasons at all, and its tooltip says what was measured: turning reasoning off does
+**not** make qwen3 faster (42.1 s versus 43.6 s), because the model emits the same
+tokens either way and the flag only decides whether they land in `thinking` or in
+`content` — where, on the answer turn, they become the answer. It is exposed because it
+was asked for and because it is the model's own switch; it is labelled so nobody reaches
+for it expecting speed.
+
+**Tradeoffs.** Two models to keep measured, and a catalogue that goes stale if the
+evaluation set changes without a re-run. The numbers name their source in the menu
+footer (`python -m eval.runner --agent local-model`) so a sceptical reader can check
+them rather than trust them.

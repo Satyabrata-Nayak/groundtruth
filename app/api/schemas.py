@@ -106,6 +106,14 @@ class AnalysisCreate(BaseModel):
     # analysis; the second gets 200 and the first one's id, not a duplicate job.
     idempotency_key: str | None = Field(default=None, max_length=128)
 
+    # WHICH MODEL SHOULD ANSWER, chosen per question rather than per deployment.
+    # Validated against a catalogue in the route: this string arrives from a browser,
+    # and passing it to Ollama unchecked would let a request pull and run any model on
+    # the host. None means "whatever the worker is configured with".
+    model: str | None = Field(default=None, max_length=128)
+    # Tri-state. None is "the asker expressed no preference", which is not False.
+    thinking: bool | None = None
+
 
 class AnalysisOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -121,6 +129,10 @@ class AnalysisOut(BaseModel):
     finished_at: datetime | None
     result: dict[str, Any] | None
     error: str | None
+    # Echoed back so a client can show what a stored analysis was actually run with,
+    # rather than what the picker happens to be set to now.
+    llm_model: str | None = None
+    llm_thinking: bool | None = None
 
 
 class EventOut(BaseModel):
@@ -150,3 +162,25 @@ class HealthOut(BaseModel):
     status: str
     database: bool
     version: str
+
+
+class ModelOut(BaseModel):
+    """One selectable model, with the measurements that justify choosing it.
+
+    Every figure here came from this project's own evaluation set, so the UI can put
+    real numbers in front of the choice instead of adjectives. `available` is checked
+    against Ollama at request time: a model that is catalogued but not pulled is shown
+    with the command to get it rather than silently offered and then failing.
+    """
+
+    name: str
+    label: str
+    tagline: str
+    good_at: list[str]
+    weak_at: list[str]
+    speed: str
+    accuracy_pct: int | None
+    reasons: bool
+    size_gb: float
+    available: bool
+    is_default: bool
