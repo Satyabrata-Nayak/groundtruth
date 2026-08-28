@@ -30,7 +30,7 @@ from app.worker.analysis import (
     _pick_group_column,
     _pick_metric_column,
     _write_answer,
-    run_analysis,
+    run_fixed_analysis,
 )
 from app.worker.heartbeat import StopRequested
 from app.worker.loop import Worker, make_worker_id
@@ -173,11 +173,11 @@ def collect(events):
     return emit
 
 
-def test_run_analysis_produces_the_m5_result_shape(sales_dataset):
-    """The contract M5 has to fill. If this shape changes, so do the database column,
-    the API schema and the frontend — so it is pinned here rather than assumed."""
+def test_the_fixed_engine_produces_the_shared_result_shape(sales_dataset):
+    """The contract BOTH engines fill. If this shape changes, so do the database
+    column, the API schema and the frontend — so it is pinned rather than assumed."""
     events = []
-    result = run_analysis(
+    result = run_fixed_analysis(
         dataset_id=sales_dataset.dataset_id,
         version=1,
         question="which region sells most?",
@@ -185,7 +185,16 @@ def test_run_analysis_produces_the_m5_result_shape(sales_dataset):
         checkpoint=lambda: None,
     )
 
-    assert set(result) == {"engine", "question", "dataset", "answer", "steps", "table", "chart"}
+    assert set(result) == {
+        "engine",
+        "question",
+        "dataset",
+        "answer",
+        "steps",
+        "table",
+        "chart",
+        "warnings",
+    }
     assert result["engine"] == "hardcoded-v1"
     assert result["question"] == "which region sells most?"
     assert result["dataset"] == {"id": str(sales_dataset.dataset_id), "version": 1}
@@ -202,7 +211,7 @@ def test_run_analysis_produces_the_m5_result_shape(sales_dataset):
 
 def test_it_does_not_sum_the_identifier(sales_dataset):
     """The end-to-end version of the first bug, on data with a real numeric id."""
-    result = run_analysis(
+    result = run_fixed_analysis(
         dataset_id=sales_dataset.dataset_id,
         version=1,
         question="q",
@@ -218,7 +227,7 @@ def test_every_tool_call_is_announced_before_and_after(sales_dataset):
     """The trail must show intent as well as outcome. In M5 a TOOL_CALL with no
     matching TOOL_RESULT is how a hung or killed step is recognised."""
     events = []
-    run_analysis(
+    run_fixed_analysis(
         dataset_id=sales_dataset.dataset_id,
         version=1,
         question="q",
@@ -240,7 +249,7 @@ def test_a_checkpoint_that_raises_stops_the_analysis(sales_dataset):
             raise StopRequested("cancelled")
 
     with pytest.raises(StopRequested):
-        run_analysis(
+        run_fixed_analysis(
             dataset_id=sales_dataset.dataset_id,
             version=1,
             question="q",
@@ -253,7 +262,7 @@ def test_an_unreadable_dataset_fails_with_a_reason(db, data_root):
     """A dataset id that resolves to no files must produce AnalysisFailed — a message
     for the user — rather than an unhandled exception the worker reports as a bug."""
     with pytest.raises(AnalysisFailed):
-        run_analysis(
+        run_fixed_analysis(
             dataset_id=uuid.uuid4(),
             version=1,
             question="q",
@@ -275,7 +284,7 @@ def test_a_dataset_with_nothing_to_compare_is_described_instead(db, data_root, t
     )
     created = create_dataset(path, name="notes")
 
-    result = run_analysis(
+    result = run_fixed_analysis(
         dataset_id=created.dataset_id,
         version=1,
         question="what is in here?",

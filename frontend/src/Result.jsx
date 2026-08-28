@@ -93,6 +93,14 @@ export default function Result({ analysisId }) {
       </p>
       {error && <p role="alert">{error}</p>}
 
+      {running && (
+        <p>
+          <small>
+            the model is working — a local 4B model takes 30 seconds to a few minutes.
+          </small>
+        </p>
+      )}
+
       <h3>events</h3>
       <ol>
         {events.map((e) => (
@@ -119,6 +127,20 @@ function ResultBody({ result }) {
     <>
       <h3>answer</h3>
       <p style={{ whiteSpace: 'pre-wrap' }}>{result.answer}</p>
+
+      {/* Shown ABOVE the evidence, not tucked away at the bottom. A warning says the
+          agent ran out of steps, or answered without querying anything — exactly the
+          conditions under which a fluent answer should be trusted least, so hiding it
+          below the fold would defeat the reason for recording it. */}
+      {result.warnings?.length > 0 && (
+        <ul>
+          {result.warnings.map((w, i) => (
+            <li key={i}>
+              <small>⚠ {w}</small>
+            </li>
+          ))}
+        </ul>
+      )}
 
       {result.table?.rows?.length > 0 && (
         <>

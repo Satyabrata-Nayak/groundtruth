@@ -18,8 +18,8 @@ So the scoreboard ships with both ends of its own scale:
                    the grader is handing out free passes, and every later number is
                    inflated by however many it gave away.
 
-The real agent arrives in M5 and slots into the same interface. When it scores 62%,
-that 62% sits on a scale whose endpoints have been measured.
+`LocalModelAgent` is the real one, and it slots into the same interface. When it
+scores 62%, that 62% sits on a scale whose endpoints have been measured.
 
 THE ORACLE IS NOT A CHEAT
 -------------------------
@@ -32,10 +32,13 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from app.tools import ToolContext, ToolRegistry, ToolResult
 from eval.suite import Question
+
+if TYPE_CHECKING:  # pragma: no cover - import cost only matters at run time
+    from app.agent.llm import LlmClient
 
 
 @dataclass
@@ -143,6 +146,77 @@ class SchemaOnlyAgent:
         )
 
 
+class _RecordingRegistry:
+    """A registry that remembers every result, so the runner can score HOW as well as WHAT.
+
+    `Registry.call` is the single choke point between a model and any computation, so
+    wrapping it is enough — there is no second path to record. The agent loop is
+    handed this instead of the real registry and cannot tell the difference.
+    """
+
+    def __init__(self, inner: ToolRegistry) -> None:
+        self._inner = inner
+        self.results: list[ToolResult] = []
+
+    def call(self, name: str, context: ToolContext, arguments: dict[str, Any] | None = None):
+        result = self._inner.call(name, context, arguments)
+        self.results.append(result)
+        return result
+
+    def get(self, name: str):
+        return self._inner.get(name)
+
+    def names(self) -> list[str]:
+        return self._inner.names()
+
+    def specs(self, only: list[str] | None = None) -> list[dict[str, Any]]:
+        return self._inner.specs(only)
+
+
+class LocalModelAgent:
+    """The real agent: a local model choosing tools, scored on the same scale as the stubs.
+
+    It runs the SAME `run_agent_analysis` the worker runs — not a copy of it tuned for
+    the benchmark. A harness that measures a special evaluation path measures the
+    harness.
+    """
+
+    name = "local-model"
+
+    def __init__(self, client: LlmClient | None = None) -> None:
+        self._client = client
+
+    def answer(self, question: Question, context: ToolContext, registry: ToolRegistry) -> AgentRun:
+        from app.agent.analyst import run_agent_analysis
+        from app.agent.contract import AnalysisFailed
+
+        recording = _RecordingRegistry(registry)
+        started = time.perf_counter()
+        try:
+            result = run_agent_analysis(
+                dataset_id=context.dataset_id,
+                version=context.version,
+                question=question.question,
+                emit=lambda *args, **kwargs: None,
+                checkpoint=lambda: None,
+                client=self._client,
+                registry=recording,
+            )
+        except AnalysisFailed as exc:
+            return AgentRun(
+                answer="",
+                tool_results=recording.results,
+                duration_s=time.perf_counter() - started,
+                error=str(exc),
+            )
+
+        return AgentRun(
+            answer=result["answer"],
+            tool_results=recording.results,
+            duration_s=time.perf_counter() - started,
+        )
+
+
 def _render(data: dict[str, Any]) -> str:
     """Turn a query result into readable text.
 
@@ -166,4 +240,5 @@ BUILTIN_AGENTS: dict[str, type] = {
     "oracle": OracleAgent,
     "refusing": RefusingAgent,
     "schema-only": SchemaOnlyAgent,
+    "local-model": LocalModelAgent,
 }

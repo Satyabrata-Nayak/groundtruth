@@ -225,15 +225,21 @@ TERMINAL_STATUSES = frozenset(
 class EventKind(StrEnum):
     """What kind of thing happened. Deliberately a small, closed vocabulary.
 
-    In M5 these become the agent's observable trace. Note what is absent: there is no
-    THOUGHT kind. Chain-of-thought is not persisted — it is unverifiable narration, and
-    storing it would invite the UI to present a model's self-description as evidence.
-    Only things that actually happened get a row.
+    These are the agent's observable trace. Note what is absent: there is no THOUGHT
+    kind. Chain-of-thought is not persisted — it is unverifiable narration, and storing
+    it would invite the UI to present a model's self-description as evidence. Only
+    things that actually happened get a row.
+
+    MODEL_CALL is the borderline case, and it is here because a round trip to the model
+    IS a thing that happened: it has a duration, a token count and a decision that came
+    out of it. Its payload records how long it took and what it chose to do, never what
+    it said to itself on the way there.
     """
 
     QUEUED = "QUEUED"
     CLAIMED = "CLAIMED"
     RECLAIMED = "RECLAIMED"
+    MODEL_CALL = "MODEL_CALL"
     TOOL_CALL = "TOOL_CALL"
     TOOL_RESULT = "TOOL_RESULT"
     NOTE = "NOTE"

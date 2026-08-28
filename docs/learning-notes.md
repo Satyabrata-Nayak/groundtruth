@@ -1277,3 +1277,214 @@ environment, not the queue: a shared database plus a background consumer means t
 isolation is no longer something the test file can guarantee on its own. Worth
 remembering before debugging a "flaky" concurrency test for an hour. The real fix, if
 this recurs, is a dedicated test database rather than a cleverer fixture.
+
+---
+
+## 31. The agent loop is small; everything around it is the work
+
+The loop itself is about forty lines: ask the model, run what it asks for, feed the
+result back, stop when it writes prose instead. Writing that took an afternoon. What
+took the rest of the time was everything defending it, and each defence exists because
+of something that actually happened rather than something imagined:
+
+```
+the schema is in the prompt        invented column names
+one tool call per turn honoured    qwen3 emits the same call three times in parallel
+tool errors fed back as text       a bad call is repaired instead of retried forever
+repeat calls refused               the loop cannot spin on one idea
+step budget AND time budget        a confused agent stops and says what it has
+answer with no tool call           pushed back once, flagged if it persists
+evidence table from the results    the table cannot agree with a wrong answer
+figures traced to computations     the model does arithmetic in its head
+```
+
+The lesson worth keeping: **the interesting part of an agent is not the loop, it is the
+list of ways the loop is wrong.** A tutorial agent is the forty lines. A working one is
+the forty lines plus a reason for every guard.
+
+---
+
+## 32. `think: false` is slower AND worse, which is not what I expected
+
+M1 measured that disabling qwen3's reasoning block produced worse machine-readable
+output, because the model reasons anyway and, told not to, does it inside `content`
+where it then has to be stripped with a regex. I re-measured on the real thing, expecting
+at least a speed win to trade against:
+
+```
+                    tool-call turn   answer turn   total
+reasoning on             50 s            80 s      130 s
+reasoning off            67 s           153 s      220 s   + non-Latin characters in
+                                                             the output
+```
+
+Slower on both turns. The reason is the same as M1's: the reasoning happens either way.
+With `think: true` it goes into `message.thinking`, which is a separate field we never
+show and never store. With `think: false` it goes into `content`, which is longer to
+generate, has to be stripped, and — on this run — came back with characters that
+crashed a `print()` on a cp1252 Windows console.
+
+So "turn off thinking to go faster" is exactly backwards for this model. What DID make
+it faster was telling it not to recite the result table in prose (135 s → 80 s on the
+answer turn): the table is already shown to the reader, so listing ten rows in a
+sentence is pure output tokens for negative value.
+
+**The general shape:** on a small local model, latency is dominated by output tokens,
+so the cheapest speed-ups are the ones that ask for less text — not the ones that ask
+for less thinking.
+
+---
+
+## 33. Four bugs the output showed and the code did not — for the fourth milestone running
+
+The pattern has now held for M3, M4 and M5. Reading the code found none of these.
+Reading one real answer found all of them in about a minute.
+
+**1. `LIMIT 1`, so there was no chart.** Asked "which country generated the most
+revenue", the model wrote `ORDER BY total DESC LIMIT 1`. Correct SQL, correct answer —
+and a one-row table, which cannot be charted, and which shows nobody whether the UK won
+by a mile or a rounding error. A prompt rule ("when the question asks which is highest,
+return the top 10") fixed it and made the answer better as well as prettier.
+
+**2. It invented a currency.** "The United Kingdom generated the most revenue at
+$8,187,806.36". The dataset is a UK retailer, the column is `UnitPrice`, and nothing
+anywhere says dollars. A fabricated unit is a fabricated fact and it is not obviously
+one, which is what makes it dangerous.
+
+**3. Arithmetic in its head — the important one.** See note 34.
+
+**4. A false positive in my own grounding check.** Asked for customer ages on a dataset
+that has none, the agent inspected the schema, correctly answered "this data does not
+record that", and was flagged with *"the answer was written without running a query
+against the data"*. My evidence rule excluded `inspect_schema` by name, on the reasoning
+that a schema read is not a computation. But **establishing that the data cannot answer
+a question is done precisely by looking at the data.** The rule is now "any successful
+tool call the MODEL chose" — the automatic pre-fetch is excluded because nobody chose
+it, and everything else counts.
+
+That fourth one is the one I would have defended in review. It was a rule that sounded
+principled and had a category of correct behaviour on the wrong side of it.
+
+---
+
+## 34. The number that came from nowhere
+
+This is the single most instructive output of the milestone.
+
+> "WORLD WAR 2 GLIDERS ASSTD DESIGNS with 53,847 units, significantly exceeding the
+> next highest product JUMBO BAG RED RETROSPOT by **16,484** units"
+
+53,847 came from DuckDB. 47,363 came from DuckDB. 53,847 − 47,363 = **6,484**.
+
+Every guard in the system was working. The schema was real, the SQL was real, the table
+printed underneath the sentence was real and correct, and the two figures either side of
+the wrong one were exact. The model subtracted two numbers, got it wrong, and wrote it
+into the only clause of the sentence where nobody would think to check.
+
+Two things follow, and the second is the one I would not have predicted.
+
+**A prompt rule helps.** Adding "do not do arithmetic yourself — differences, ratios and
+percentages must be computed by SQL" fixed this instance. The rerun quoted both totals
+and let the reader compare them, which is also a better sentence.
+
+**A prompt rule is not enough, and its success is the problem.** It worked, so the next
+hundred answers will look fine, and the failure will return on the one where the model
+is a little more confident. A rule that works most of the time is indistinguishable from
+a rule that works, right up until it matters.
+
+So the check is mechanical: pull every figure out of the answer, pull every number out
+of every successful tool result, report what does not match. It is thirty lines
+(`app/agent/verify.py`) and it catches the class rather than the instance.
+
+**It warns; it does not correct.** This took the longest to settle. Rewriting the
+sentence to remove the bad figure, or silently substituting the right one, would be a
+different way of asserting more than the system knows — and it would hide the fact that
+the model is capable of this. A figure that cannot be traced is a fact about confidence,
+and it belongs in front of the reader, above the evidence rather than below it.
+
+**Matching has to be loose, and the bias has to be towards silence.** An answer writes
+`8,187,806.36` for a stored `8187806.363998184` and `35%` for a stored `0.3528`. So a
+figure matches if it equals a computed number, is it rounded to any sensible number of
+places, or is within 0.5% of it — and fractions are matched against their percentage
+form too. Figures under 100 are skipped entirely, because "the top 10 countries" and
+"3 groups" are numbers no tool produced and flagging them would bury the one that
+matters. **A warning on a correct answer teaches people to ignore warnings.**
+
+---
+
+## 35. `list.extend(generator over the same list)` hangs forever
+
+The verifier needed percentage forms of any fraction, so:
+
+```python
+numbers.extend(value * 100 for value in numbers if 0.0 <= value <= 1.0)
+```
+
+This reads correctly and hung the entire test suite until pytest was killed at five
+minutes. `extend` consumes the generator lazily while appending to the list the
+generator is iterating. Most values are harmless — `0.35 * 100` is 35, outside the
+range, not re-emitted. But a single `0.0` anywhere in the data produces `0.0`, which IS
+in range, which produces `0.0`, forever.
+
+Real datasets are full of zeros. The fix is to materialise first:
+
+```python
+percentages = [value * 100 for value in numbers if 0.0 <= value <= 1.0]
+return numbers + percentages
+```
+
+**The general rule:** never let a lazy iterator's source be the thing you are mutating.
+The version with a list comprehension inside `extend(...)` would also have been safe,
+which makes the failure depend on a single pair of brackets.
+
+---
+
+## 36. A test fixture deleted 542,000 rows of real data, twice
+
+`tests/conftest.py`'s `db` fixture opens with `DELETE FROM datasets`. Entirely
+reasonable — a test needs a known starting state. It was also pointed at the
+development database, which is the same database the running app uses.
+
+So `uv run pytest` destroyed a real upload. Twice, because the first time the symptom
+appeared much later and somewhere else: the API answered `no dataset <uuid>` during an
+unrelated end-to-end check, and the obvious hypothesis was a bug in the new code.
+
+Two things worth keeping:
+
+**The damage was invisible at the time it happened.** The tests passed. Nothing failed.
+The consequence surfaced minutes later in a different process, which is the hardest kind
+of causation to see.
+
+**The fix belongs in code, not in a README.** One line, before `app.config` is imported:
+
+```python
+os.environ["POSTGRES_DB"] = os.environ.get("TEST_POSTGRES_DB", "adi_test")
+```
+
+An environment variable beats the `.env` file in pydantic-settings, and both the engine
+and Alembic read the same `get_settings()`, so one line redirects everything
+consistently. A session fixture creates the database if missing and migrates it. A setup
+step that a person has to remember is a setup step that eventually gets skipped, and the
+failure mode of skipping this one is deleting real data.
+
+---
+
+## 37. Why the model never computes anything, stated once
+
+The division this whole milestone rests on:
+
+```
+the model decides WHAT to compute        which column, which grouping, which filter
+DuckDB decides WHAT THE ANSWER IS        every number a user ever sees
+```
+
+Nothing else would work. A 4B model reasons well enough to pick `Quantity * UnitPrice`
+grouped by `Country` — that is a language problem, and language is what it is for. It
+cannot be trusted to sum 541,909 rows, and asking it to would be asking the wrong
+question of the wrong tool.
+
+Everything else in `app/agent/` follows from holding that line: tools are the only path
+to computation, tool results are the only source of numbers, the evidence table comes
+from the results rather than the prose, and the figures in the prose get checked back
+against the results. The model is the part of the system with judgement and no
+authority.

@@ -1,20 +1,26 @@
-"""The analysis a worker runs. Deliberately hardcoded, deliberately not intelligent.
+"""Which analysis engine runs, and the deterministic one that needs no model.
 
-WHY THERE IS NO MODEL IN THIS FILE
-----------------------------------
-M4's goal is that the whole path works: browser -> API -> queue -> worker -> tools ->
-result -> browser. Putting a language model in that path now would mean every failure
-has two candidate causes, and the interesting one (the plumbing) would be blamed on
-the boring one (the model), or worse, the reverse. So the "agent" here is a fixed
-sequence of tool calls with no decisions in it.
+    run_analysis()  ──►  ANALYSIS_ENGINE=agent  ──►  app/agent/analyst.py   (M5)
+                    └──►  ANALYSIS_ENGINE=fixed  ──►  run_fixed_analysis()   (M4)
 
-What matters is that it produces the SAME SHAPE M5 will produce. The result contract
+WHY THE FIXED ENGINE SURVIVED M5
+--------------------------------
+The obvious move was to delete this file once the agent worked. Keeping it is worth
+more than the eighty lines it costs, because it is the only way to answer one question
+quickly: *is this broken, or is the model just bad at it?* Set `ANALYSIS_ENGINE=fixed`
+and the whole stack — API, queue, worker, tools, sandbox, UI — runs with no model in
+it. If it still fails, the model was never the problem.
 
-    {answer, steps[], chart, table, engine}
+It is also what makes the test suite runnable on a machine with no Ollama, and it is
+the calibration floor the eval harness already measures against.
 
-is what the API serialises, what the UI renders, and what M5 has to fill. Getting it
-wrong now means changing the database, the API and the frontend later; getting it
-right now means M5 replaces exactly one function.
+THE SHARED RESULT CONTRACT
+--------------------------
+    {engine, question, dataset, answer, steps[], table, chart, warnings[]}
+
+is what the API serialises, what the UI renders, and what both engines fill. It was
+fixed in M4 for exactly this reason: M5 replaced one function and changed neither the
+database, the API nor the frontend.
 
 WHY IT GOES THROUGH THE TOOL REGISTRY
 -------------------------------------
@@ -33,16 +39,18 @@ Every bug found here is a bug M5 does not get to blame on a 4B model.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
 from typing import Any
 
+from app.agent.analyst import run_agent_analysis
+from app.agent.contract import AnalysisFailed, Checkpoint, Emit
+from app.config import get_settings
 from app.db.models import EventKind
 from app.tools import get_registry
 from app.tools.base import ToolContext, ToolResult
 
 # The result shape is versioned so a stored analysis says what produced it. M5 writes
 # "agent-v1" here, and a row from M4 stays interpretable next to it forever.
-ENGINE = "hardcoded-v1"
+FIXED_ENGINE = "hardcoded-v1"
 
 # A grouping column with more distinct values than this is an identifier in disguise,
 # and grouping by it produces one row per row. `compare_groups` enforces its own,
@@ -72,13 +80,6 @@ _INTEGER_TYPES = frozenset(
     }
 )
 
-Emit = Callable[[EventKind, str, dict[str, Any] | None], None]
-Checkpoint = Callable[[], None]
-
-
-class AnalysisFailed(Exception):
-    """The analysis cannot produce an answer, for a reason worth showing the user."""
-
 
 def run_analysis(
     *,
@@ -88,12 +89,42 @@ def run_analysis(
     emit: Emit,
     checkpoint: Checkpoint,
 ) -> dict[str, Any]:
-    """Run the fixed analysis and return the result payload.
+    """Run the configured engine and return the result payload.
+
+    The worker calls only this. Which engine runs is configuration, not a decision made
+    at the call site, so switching one off never means editing the worker.
+    """
+    if get_settings().analysis_engine == "fixed":
+        emit(EventKind.NOTE, "running the fixed analysis (no model)", {"engine": FIXED_ENGINE})
+        return run_fixed_analysis(
+            dataset_id=dataset_id,
+            version=version,
+            question=question,
+            emit=emit,
+            checkpoint=checkpoint,
+        )
+    return run_agent_analysis(
+        dataset_id=dataset_id,
+        version=version,
+        question=question,
+        emit=emit,
+        checkpoint=checkpoint,
+    )
+
+
+def run_fixed_analysis(
+    *,
+    dataset_id: uuid.UUID,
+    version: int,
+    question: str,
+    emit: Emit,
+    checkpoint: Checkpoint,
+) -> dict[str, Any]:
+    """Compare the first usable numeric column across the first usable categorical one.
 
     `emit` records an observable event; `checkpoint` raises if the work should stop.
     Both are passed in rather than imported so this function has no opinion about
-    transactions or threads — which is what makes it testable without a worker, and
-    what will make the M5 agent loop a drop-in replacement.
+    transactions or threads — which is what made the M5 agent a drop-in replacement.
     """
     registry = get_registry()
     context = ToolContext(dataset_id=dataset_id, version=version)
@@ -165,13 +196,15 @@ def run_analysis(
     )
 
     return {
-        "engine": ENGINE,
+        "engine": FIXED_ENGINE,
         "question": question,
         "dataset": {"id": str(dataset_id), "version": version},
         "answer": _write_answer(question, group_column, metric_column, comparison, row_count),
         "steps": steps,
         "table": _table_from(comparison),
         "chart": chart.data if chart.ok else None,
+        # Always present, always empty: the fixed engine has no judgement to qualify.
+        "warnings": [],
     }
 
 
@@ -354,7 +387,7 @@ def _describe_only(
     breakdown = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
 
     return {
-        "engine": ENGINE,
+        "engine": FIXED_ENGINE,
         "question": question,
         "dataset": {"id": str(dataset_id), "version": version},
         "answer": (
@@ -371,4 +404,5 @@ def _describe_only(
             "rows": [[c.get("name"), c.get("type"), c.get("kind")] for c in schema.data["columns"]],
         },
         "chart": None,
+        "warnings": [],
     }

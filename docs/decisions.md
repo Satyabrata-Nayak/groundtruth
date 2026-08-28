@@ -830,3 +830,170 @@ requests and the event list flickers backwards.
 **Tradeoffs.** Up to one second of latency on a status change, and a poll per second per
 open tab. Both are irrelevant at this scale and neither survives contact with a real
 deployment, which is a M6 problem.
+
+---
+
+## D-028 — The schema is handed to the model, not discovered by it
+
+**Decision.** Before the agent loop starts, `inspect_schema` is called deterministically
+and its result — plus three real sample rows — is rendered into the system prompt.
+`inspect_schema` and `profile_column` remain in the action space anyway.
+
+**Why.** The textbook agent starts with an empty prompt and lets the model call
+`inspect_schema` as its first move. That costs a full turn — 10 to 40 seconds on a 4B
+model with reasoning on — to produce a result that is completely deterministic and
+takes 40 ms to fetch.
+
+It is also the turn most likely to go wrong. A model that has not seen the column names
+has nothing to ground its first call in, so it guesses, gets an error, and spends a
+second turn recovering. Handing the schema over deletes an entire failure class and
+roughly a third of the wall clock.
+
+Three sample rows cost about 150 tokens and answer what a type list cannot: is
+`InvoiceDate` an ISO timestamp or `1/10/11 10:04`? Is `Country` 'UK' or 'United
+Kingdom'? A model writing `WHERE Country = 'UK'` against a column that says 'United
+Kingdom' gets an empty result and confidently reports zero — which is the exact failure
+this system exists to prevent, arrived at through correct SQL.
+
+**Tradeoffs.** A larger prompt on every turn, and a dataset with 200 columns would need
+the rendering truncated. Both tools stay available for the model that wants more.
+
+---
+
+## D-029 — Two budgets, and hitting either asks for an answer rather than failing
+
+**Decision.** `agent_max_steps` (6) bounds model turns; `agent_time_budget_s` (300)
+bounds wall clock. Hitting either stops the loop, removes the tools from the request,
+and asks for a final answer. The result carries a warning saying which budget ran out.
+
+**Why two.** They are different failure modes. Six fast turns that go nowhere should
+stop at six. One turn that takes four minutes because the machine is swapping should
+stop on time, whatever the step count says. A single budget always gets one of these
+wrong.
+
+**Why not a failure.** A partial analysis that reports what it established is more
+useful than an error, and the alternative — discarding real computed results because
+the agent was slow to converge — is the worst trade available.
+
+**Why the final turn drops the tools entirely.** Asking a model to "stop calling tools
+now" while still passing it tools is asking it to resist the strongest signal in its
+prompt. Removing them makes a tool call impossible rather than discouraged.
+
+**Tradeoffs.** Six steps is not enough for a genuinely multi-part question, and the
+answer then says so rather than pretending otherwise.
+
+---
+
+## D-030 — The evidence table and chart are built from tool results, never by the model
+
+**Decision.** After the loop, the last successful tabular tool result becomes the
+evidence table, and a bar chart is derived from that table. `create_chart`'s output wins
+if the agent chose to call it.
+
+**Why the table is independent.** The answer is a claim; the table is what makes it
+checkable. If the model produced both, they could agree with each other and be wrong
+together — and a UI showing agreeing numbers is more convincing than one showing none,
+which makes it worse.
+
+**Why the LAST result.** An agent's early calls are orientation: a schema read, a
+distinct-value check, a failed guess at a column name. The call that produced the answer
+is the last one that returned rows. Picking the first shows a person the agent's
+throat-clearing and labels it evidence.
+
+**Why the chart is not `create_chart`.** That tool charts *stored columns*: it resolves
+`x` and `y` against the schema and aggregates in SQL. That is right for "sales by
+region" and cannot express the most common real question at all — "which country
+generated the most revenue" has no `revenue` column, revenue is `Quantity * UnitPrice`,
+and the result exists only as rows in a tool payload. Asking `create_chart` for it fails
+with "no such column", and a model that just computed the answer correctly then burns
+two turns arguing with a tool.
+
+A chart is deliberately **not** produced for a single-row result. A bar chart with one
+bar is decoration presented as analysis.
+
+**Tradeoffs.** A question whose answer is spread across two queries gets a table from
+one of them. The full trace is in `steps` either way.
+
+---
+
+## D-031 — Every figure in the answer is traced back to a computed number
+
+**Decision.** `app/agent/verify.py` extracts every figure from the answer, extracts
+every number from every successful tool result, and attaches a warning naming the
+figures that match nothing. It does not rewrite the answer and does not fail the
+analysis.
+
+**Why.** The first end-to-end run on real data produced this:
+
+> "WORLD WAR 2 GLIDERS ASSTD DESIGNS with 53,847 units, significantly exceeding the
+> next highest product JUMBO BAG RED RETROSPOT by 16,484 units"
+
+53,847 and 47,363 both came from DuckDB. 16,484 came from the model's head, and the
+correct difference is 6,484. Every guard was working — real schema, real SQL, real table
+underneath the sentence — and the model still asserted a number nobody computed, in the
+one clause where it reads as completely natural.
+
+No prompt wording removes this. A language model does arithmetic by autocomplete, and
+autocomplete is right most of the time. A prompt rule was added ("do not do arithmetic
+yourself; put the difference in the query") and it did fix this instance — but a rule
+that works most of the time is exactly what this check is for.
+
+**Why it warns rather than corrects.** Dropping the sentence or quietly fixing the
+number would be a different way of asserting more than is known. A figure the system
+cannot trace is a fact about the system's confidence and belongs in front of the user.
+
+**Why the matching is loose.** An answer writes 8,187,806.36 for a stored
+8187806.363998184, and 35% for a stored share of 0.3528. A figure matches if it equals a
+computed number, is that number rounded to any sensible number of places, or is within
+0.5% of it; fractions are also matched against their percentage form. Figures below 100
+are skipped entirely — "the top 10 countries" and "3 groups" are numbers no tool needs
+to have produced.
+
+The bias is deliberately towards NOT warning. A warning on a correct answer teaches
+people to ignore warnings, and then the one that matters is ignored too.
+
+**Tradeoffs.** A correct figure the model rounded unusually could be flagged, and a
+wrong figure that coincidentally matches an unrelated number in a payload is missed.
+Neither is silent: the trace and the table are both shown.
+
+---
+
+## D-032 — The deterministic engine survived M5, and is selected by configuration
+
+**Decision.** `ANALYSIS_ENGINE` chooses `agent` (the model) or `fixed` (M4's hardcoded
+analysis). Both fill the same result contract. The test suite forces `fixed` by an
+autouse fixture.
+
+**Why.** The obvious move was to delete the fixed engine once the agent worked. Keeping
+it answers one question in one command: *is this broken, or is the model just bad at
+it?* With `ANALYSIS_ENGINE=fixed` the whole stack runs with no model in it, and if it
+still fails the model was never the problem.
+
+It is also what makes the suite runnable on a machine with no Ollama. A test suite whose
+result depends on which weights happen to be pulled is not a test suite; the agent loop
+is tested against a scripted model instead, and the genuinely non-deterministic question
+— can qwen3:4b actually answer this? — is what `eval/` is for.
+
+**Tradeoffs.** Two engines to keep filling one contract. The contract is pinned by a
+test that fails if either drifts.
+
+---
+
+## D-033 — The test suite runs against its own database, created by the suite
+
+**Decision.** `tests/conftest.py` sets `POSTGRES_DB=adi_test` before `app.config` is
+imported, creates that database if it does not exist, and migrates it to head.
+
+**Why.** The `db` fixture empties tables. Pointed at the development database that the
+running app also uses, that is a data-loss bug wearing a test fixture: it deleted a real
+542,000-row upload twice in one afternoon, and the only symptom was the API answering
+`no dataset <uuid>` some minutes later, during an unrelated task.
+
+The redirect is one environment variable because the engine and Alembic both read the
+same `get_settings()`, and because pydantic-settings reads the environment before the
+`.env` file. Creating and migrating the database in code rather than in a README step is
+the point: a setup instruction that can be skipped eventually is, and the failure mode
+of skipping this one is running the suite against real data.
+
+**Tradeoffs.** A second database on the dev machine, and the first run pays for a
+migration.

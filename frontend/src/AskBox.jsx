@@ -44,13 +44,15 @@ export default function AskBox({ dataset, onQueued }) {
           {busy ? 'queueing…' : 'ask'}
         </button>
       </form>
-      {/* Said plainly rather than hidden. M4 runs a fixed analysis; a UI that implied
-          otherwise would be the first place this project told a user something untrue. */}
+      {/* An honest expectation, set before the wait rather than after it. A local 4B
+          model reasons for 30-60 seconds per turn, and a progress trail that starts
+          moving immediately is only reassuring if the user knows what it is waiting
+          for. */}
       <p>
         <small>
-          M4 runs a fixed analysis and does not read the question yet — it always
-          compares the first usable numeric column across the first usable categorical
-          one. The question is stored and answered for real in M5.
+          A local model answers this by running queries against your data — it computes
+          every number rather than recalling one. Expect 30 seconds to three minutes;
+          each step appears below as it happens.
         </small>
       </p>
       {error && <p role="alert">could not queue: {error}</p>}

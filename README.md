@@ -38,7 +38,7 @@ Three design commitments, in order of importance:
 | Analytics | DuckDB over Parquet | SQL is a surface the model can emit and we can *validate* — see [D-001](docs/decisions.md) |
 | Metadata + job queue | PostgreSQL | `FOR UPDATE SKIP LOCKED` gives a durable queue without Redis |
 | LLM | Qwen3 via Ollama | local, GPU-accelerated, free |
-| Frontend | React + Vite | unstyled at M4 on purpose — it exists to surface API design flaws, not to look finished |
+| Frontend | React + Vite | deliberately unstyled — it exists to surface API design flaws, not to look finished |
 | Env | uv | fast, reproducible lockfile |
 
 Not used, deliberately: LangChain, Redis, a vector database, Kubernetes, cloud storage,
@@ -112,10 +112,56 @@ The worker is safe to kill at any point. Its job is reclaimed and finished by th
 one — there is a test that hard-kills a real worker process to prove it
 (`tests/test_worker_recovery.py`).
 
-> **M4 does not answer your question yet.** The worker runs a *fixed* analysis: it
-> compares the first usable numeric column across the first usable categorical one. The
-> question is stored and pinned to a dataset version, and M5 replaces one function to
-> answer it for real. The UI says so too, rather than implying otherwise.
+It also needs **Ollama** running with the model pulled:
+
+```bash
+ollama serve
+ollama pull qwen3:4b
+```
+
+Expect **30 seconds to three minutes** per question on a laptop. That is a local 4B
+model reasoning, not the plumbing: the queue answers `POST /analyses` in about 4 ms and
+every step appears in the UI as it happens.
+
+### What actually happens when you ask
+
+```
+  your question
+       │
+       ▼
+  the schema and three real sample rows are fetched deterministically   ~40 ms
+       │                       (not asked of the model: it cannot be wrong,
+       │                        and it is the turn most likely to go wrong)
+       ▼
+  the model chooses ONE tool per turn ──► DuckDB, in a sandbox ──► result JSON back
+       │  up to 6 turns, or 300 seconds, whichever comes first
+       ▼
+  prose answer + the table it came from + a chart of that table
+       │
+       ▼
+  every figure in the answer is checked against the numbers actually computed
+```
+
+The model **chooses what to compute and never computes anything**. Every number a user
+sees came out of DuckDB.
+
+> **The last step is the one worth explaining.** The first real run answered "53,847
+> units, exceeding the next product by 16,484" — and 53,847 − 47,363 is 6,484. Both
+> totals came from the database; the gap came from the model's head, in a sentence
+> where everything else was right. `app/agent/verify.py` now traces every figure in an
+> answer back to a computed number and names the ones it cannot. It does not rewrite
+> the sentence: a figure the system cannot vouch for is a fact about its confidence,
+> and quietly fixing it would be another way of claiming more than is known.
+
+### Running it without a model
+
+```bash
+ANALYSIS_ENGINE=fixed uv run python -m app.worker
+```
+
+The whole stack — API, queue, worker, tools, sandbox, UI — then runs with no model in
+it, using M4's deterministic analysis. If something still fails, the model was never
+the problem.
 
 ---
 
@@ -139,7 +185,7 @@ one — there is a test that hard-kills a real worker process to prove it
 | **Data layer** | CSV/Parquet ingestion, profiling, sandboxed DuckDB SQL execution — **done** |
 | **Tools + evaluation** | deterministic tool registry, golden question set with hand-written reference SQL — **done** |
 | **Application** | FastAPI, durable PostgreSQL job queue, web UI — **done** |
-| **Agent** | tool-calling loop, execution trace, graded continuously against the evaluation set |
+| **Agent** | tool-calling loop, execution trace, answer verification — **done** |
 | **Verification** | numeric claim verification, charts, statistics, anomaly detection, performance benchmarks |
 
 Deliberate ordering: the data layer and the evaluation set are built **before** the

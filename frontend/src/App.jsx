@@ -46,7 +46,7 @@ export default function App() {
 
   return (
     <main>
-      <h1>AI Data Analyser — M4</h1>
+      <h1>AI Data Analyser</h1>
       <p>
         <small>
           api: {health ? `${health.status} (database ${health.database ? 'up' : 'DOWN'})` : '…'} —

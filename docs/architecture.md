@@ -355,3 +355,92 @@ true rather than hoped for.
 Attempts are counted at **claim** time, not completion, so a job that kills its worker
 has still consumed an attempt — otherwise a poison job is retried until it has killed
 every worker you own.
+
+---
+
+## What exists after M5
+
+The question is now answered by a language model that is not allowed to compute
+anything. `app/agent/` is the whole of the reasoning layer:
+
+```
+app/agent/
+  contract.py   AnalysisFailed, Emit, Checkpoint, the shared result shape
+  llm.py        the ONLY code that talks to Ollama
+  prompt.py     what the model is told before it is asked anything
+  analyst.py    the loop: model proposes, tools compute, evidence is collected
+  evidence.py   the table and chart shown underneath the answer
+  verify.py     every figure in the answer, traced back to a computation
+```
+
+## The M5 request path, as built
+
+```
+  browser ── POST /analyses ──► FastAPI ── INSERT one PENDING row ──► 201 in ~4 ms
+                                              (unchanged from M4)
+                                                    │
+  ┌──────────────────── python -m app.worker claims it ─────────────────────────┐
+  │                                                                              │
+  │  STEP 0  deterministic, before a single token is generated                   │
+  │    inspect_schema  ──────────────────────────► 40 ms, cannot be wrong        │
+  │    SELECT * LIMIT 3  ─────────────────────────► three real sample rows       │
+  │              │                                                               │
+  │              ▼                                                               │
+  │    system prompt = rules + schema + samples                                  │
+  │                                                                              │
+  │  STEP 1..6  the loop, bounded by 6 turns OR 300 seconds                      │
+  │                                                                              │
+  │      ┌───► model turn ──┬── tool call ──► ToolRegistry.call ──► DuckDB       │
+  │      │   (30-60 s each) │                       │                            │
+  │      │                  │      result JSON ◄────┘                            │
+  │      └──────────────────┤      (a failure is a REPAIR MESSAGE, not a crash)  │
+  │                         │                                                    │
+  │                         └── prose, no tool call ──► the answer               │
+  │                                                                              │
+  │  STEP 7  presentation, built from the RESULTS and not from the model         │
+  │    evidence table  ◄── the last successful tabular result                    │
+  │    chart           ◄── derived from that table (or create_chart, if used)    │
+  │    verification    ◄── every figure in the answer vs every computed number   │
+  │                                                                              │
+  └──────────────────────────────────────────────────────────────────────────────┘
+                                       │
+  browser ◄── GET /analyses/{id}/events?after=<cursor> ── every 1 s (unchanged)
+```
+
+**The one line that everything else follows from:** the model chooses *what* to
+compute and never computes anything. Every number a user sees came out of DuckDB.
+
+## Where the guards are
+
+| failure | where it is caught |
+|---|---|
+| invented column names | the schema is in the prompt (`prompt.py`) |
+| `WHERE Country = 'UK'` on 'United Kingdom' | three real sample rows in the prompt |
+| a bad tool call | `ToolResult(ok=False)` fed back as a repair message |
+| the same call forever | `attempted` set; the repeat is refused with an explanation |
+| parallel duplicate calls | at most 2 honoured per turn |
+| a loop that goes nowhere | step budget and time budget, independently |
+| an answer with nothing behind it | pushed back once, then flagged in `warnings` |
+| a table that agrees with a wrong answer | the table is built from tool results |
+| arithmetic done in the model's head | `verify.py` traces every figure |
+| "is it the model or the plumbing?" | `ANALYSIS_ENGINE=fixed` removes the model |
+
+## The two engines
+
+```
+                     run_analysis()
+                           │
+        ANALYSIS_ENGINE ───┤
+                           │
+      "agent" ─────────────┴───────────── "fixed"
+         │                                   │
+  app/agent/analyst.py              app/worker/analysis.py
+  a model choosing tools            a fixed sequence, no model
+         │                                   │
+         └──────────► the same result shape ◄┘
+
+  {engine, question, dataset, answer, steps[], table, chart, warnings[]}
+```
+
+`engine` is stored with every result, so a row written by either stays interpretable
+next to the other forever. The contract is pinned by a test that fails if either drifts.

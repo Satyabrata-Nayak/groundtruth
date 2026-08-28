@@ -254,6 +254,9 @@ def test_events_are_returned_from_a_cursor_and_never_repeat(client, dataset):
     assert page["status"] == "SUCCEEDED"
     assert [e["kind"] for e in page["events"]] == [
         "CLAIMED",
+        # Which engine ran is the first thing recorded, so a trail is self-describing:
+        # "why did I get a mechanical answer" is answerable from the events alone.
+        "NOTE",
         "TOOL_CALL",
         "TOOL_RESULT",
         "NOTE",

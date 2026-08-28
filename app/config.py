@@ -34,6 +34,35 @@ class Settings(BaseSettings):
     # --- Ollama ---
     ollama_base_url: str = "http://127.0.0.1:11434"
     llm_model: str = "qwen3:4b"
+    # One model call. Generous because a cold model load on a laptop is 20-30 s before
+    # a single token appears, and a timeout that fires during a load looks like the
+    # model is broken when it is only starting.
+    llm_timeout_s: float = 300.0
+    # Zero, always. This is not creative writing: we want the most probable tool call,
+    # and a benchmark that cannot be reproduced is a number, not a measurement.
+    llm_temperature: float = 0.0
+    # None means "do not send the field", so the model's own default applies. M1
+    # measured `think: false` producing WORSE machine-readable output on qwen3, because
+    # the model reasons regardless and, told not to, does it inside `content` where it
+    # then has to be stripped with a regex. Reasoning stays on, in its own field.
+    llm_think: bool | None = None
+    # Ollama's default context is 4096 tokens and it TRUNCATES SILENTLY. A schema, three
+    # sample rows and two tool results pass that without warning, and the model then
+    # answers from a prompt whose first half is missing. Set explicitly, always.
+    llm_num_ctx: int = 16384
+
+    # --- Agent (M5) ---
+    # "agent" runs the language model; "fixed" runs M4's deterministic analysis. The
+    # switch exists so the whole stack can be exercised without a model — on a machine
+    # with no Ollama, in CI, and while diagnosing whether a failure is the plumbing.
+    analysis_engine: str = "agent"
+    # How many model turns one analysis may take. Each is a decision; six is enough for
+    # inspect, query, refine, chart, answer with room for one repair.
+    agent_max_steps: int = 6
+    # ...and how long it may take in total, whatever it spends the steps on. Two
+    # budgets because a fast loop going nowhere and one slow call are different
+    # failures. Hitting either asks the model to answer from what it has.
+    agent_time_budget_s: float = 300.0
 
     # --- Storage ---
     data_dir: Path = Field(default=Path("./data/datasets"))
@@ -79,6 +108,20 @@ class Settings(BaseSettings):
     # A job that has been claimed this many times without finishing is failed rather
     # than requeued forever. Attempts are counted at claim time, so a crash counts.
     analysis_max_attempts: int = 3
+
+    @model_validator(mode="after")
+    def _analysis_engine_is_known(self) -> Settings:
+        """A typo here must not silently select an engine nobody meant.
+
+        `ANALYSIS_ENGINE=Agent` or `=llm` would otherwise fall through to whichever
+        branch the dispatcher treats as its default, and the only symptom would be
+        answers that are subtly the wrong kind.
+        """
+        if self.analysis_engine not in ("agent", "fixed"):
+            raise ValueError(
+                f"analysis_engine must be 'agent' or 'fixed', got {self.analysis_engine!r}"
+            )
+        return self
 
     @property
     def cors_origin_list(self) -> list[str]:
