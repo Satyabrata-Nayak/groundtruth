@@ -252,7 +252,7 @@ class Worker:
 
         question = claimed.question
         if rewrite.needs_rewriting(question, turns):
-            resolved = rewrite.rewrite(question, turns)
+            resolved = rewrite.rewrite(question, turns, main_model=claimed.llm_model)
             if resolved != question:
                 emit(
                     EventKind.NOTE,

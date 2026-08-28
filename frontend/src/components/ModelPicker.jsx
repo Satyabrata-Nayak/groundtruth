@@ -109,10 +109,17 @@ export default function ModelPicker({ models, value, thinking, onModel, onThinki
             >
               <div className="picker-option-head">
                 <span className="picker-option-name">{model.label}</span>
+                {/* Where it runs is the first thing to know: one of these leaves the
+                    machine and one does not. */}
+                <span className={`badge ${model.provider === 'groq' ? 'is-hosted' : 'is-quiet'}`}>
+                  {model.provider === 'groq' ? 'hosted' : 'local'}
+                </span>
                 {model.accuracy_pct !== null && (
                   <span className="badge">{model.accuracy_pct}% correct</span>
                 )}
                 <span className="badge is-quiet">{model.speed}</span>
+                <span className="badge is-quiet">{model.cost}</span>
+                {model.preview && <span className="badge is-warn">preview</span>}
               </div>
 
               <p className="picker-option-tagline">{model.tagline}</p>
@@ -132,9 +139,21 @@ export default function ModelPicker({ models, value, thinking, onModel, onThinki
                 ))}
               </ul>
 
+              {/* Why it cannot be used, in the terms of ITS provider. "not installed"
+                  is meaningless for a hosted model and "no API key" is meaningless for
+                  a local one. */}
               {!model.available && (
                 <p className="picker-missing">
-                  not installed — run <code>ollama pull {model.name}</code>
+                  {model.provider === 'groq' ? (
+                    <>
+                      no API key — put <code>GROQ_API_KEY</code> in <code>.env</code> and
+                      restart the API and worker
+                    </>
+                  ) : (
+                    <>
+                      not installed — run <code>ollama pull {model.name}</code>
+                    </>
+                  )}
                 </p>
               )}
             </button>
@@ -142,8 +161,9 @@ export default function ModelPicker({ models, value, thinking, onModel, onThinki
 
           <p className="picker-foot">
             Percentages are this project&rsquo;s own evaluation set: {' '}
-            <code>python -m eval.runner --agent local-model</code>. Both models score 0%
-            on &ldquo;why&rdquo; questions.
+            <code>python -m eval.runner --agent local-model</code>. Hosted models send
+            your tool <em>results</em> — never your file — to Groq; local models send
+            nothing anywhere.
           </p>
         </div>
       )}

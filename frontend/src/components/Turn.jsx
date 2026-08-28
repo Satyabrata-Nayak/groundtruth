@@ -78,6 +78,7 @@ export default function Turn({ turn, onStatusChange }) {
               engine={result.engine}
               model={result.model}
               thinking={result.thinking}
+              chart={result.chart}
             />
           </>
         )}

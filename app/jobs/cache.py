@@ -69,8 +69,21 @@ def normalise(question: str) -> str:
     return _PUNCTUATION.sub("", " ".join(question.lower().split()))
 
 
+# Bumped whenever the prompt or the loop changes in a way that would change answers.
+#
+# WITHOUT THIS THE CACHE OUTLIVES THE CODE. A rule was added telling the model to write
+# "84%" rather than "0.8399690286861813"; the very next run served the old answer from
+# cache in 552 ms and the fix looked like it had simply not worked. A cache keyed only on
+# the question pins yesterday's behaviour to today's build.
+PROMPT_VERSION = "2026-08-29.2"
+
+
 def question_hash(question: str) -> str:
-    return hashlib.sha256(normalise(question).encode("utf-8")).hexdigest()
+    """The cache key: the normalised question, bound to the prompt that would answer it."""
+    # A separator that cannot occur in either part, so no version/question pair can
+    # collide with a different one by concatenating to the same string.
+    material = f"{PROMPT_VERSION}\n{normalise(question)}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def lookup(

@@ -1263,6 +1263,24 @@ pre.sql {
   border: 1px solid var(--accent-border);
   font-variant-numeric: tabular-nums;
 }
+.badge.is-hosted {
+  background: color-mix(in srgb, var(--ok) 14%, transparent);
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 35%, transparent);
+}
+
+.badge.is-warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-color: var(--warn-border);
+}
+
+.tool.is-derived {
+  background: var(--raised);
+  color: var(--muted);
+  border-color: var(--border);
+}
+
 .badge.is-quiet {
   background: var(--raised);
   color: var(--muted);

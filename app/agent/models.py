@@ -50,6 +50,10 @@ class ModelProfile:
     name: str
     label: str
     tagline: str
+    # "ollama" runs on this machine; "groq" is a hosted API. The provider decides which
+    # client is built, and — because it decides whether concurrent calls are genuinely
+    # concurrent — it also decides the sub-agent policy. See `fans_out`.
+    provider: str = "ollama"
     # Why you would pick this one, and what it will do badly. Both, always: a chooser
     # that only lists strengths is an advert, and the user is choosing between two
     # things that are each bad at something.
@@ -61,6 +65,40 @@ class ModelProfile:
     # toggle means anything for it.
     reasons: bool = False
     size_gb: float = 0.0
+    # Dollars per million tokens, in and out. Zero for a local model, which is the whole
+    # argument for keeping one: a question costs electricity rather than money.
+    cost_in: float = 0.0
+    cost_out: float = 0.0
+    # Preview models carry no production guarantee and can be retired without notice.
+    preview: bool = False
+    # How many tool rounds are affordable. Locally a round is 45-90 s, so two is the
+    # limit before a user gives up; on Groq a round is under a second, so the agent can
+    # afford to look, think, and look again — which is where analytical depth comes from.
+    tool_rounds: int = 2
+
+    @property
+    def is_local(self) -> bool:
+        return self.provider == "ollama"
+
+    @property
+    def fans_out(self) -> bool:
+        """May this model afford a parallel sub-agent?
+
+        THE ANSWER IS A PROPERTY OF THE PROVIDER, NOT OF THE MODEL. On one local GPU two
+        concurrent calls do not run in parallel — they split one card's tokens per second
+        and add KV-cache pressure, so fan-out is strictly a latency loss. Against a hosted
+        API the calls really are concurrent and the same design becomes free.
+
+        This is why the sub-agent policy is computed rather than configured: the same
+        architecture is right in one deployment and wrong in the other.
+        """
+        return not self.is_local
+
+    @property
+    def cost_label(self) -> str:
+        if self.is_local:
+            return "free"
+        return f"${self.cost_in:g}/${self.cost_out:g} per 1M"
 
     @property
     def speed_label(self) -> str:
@@ -71,6 +109,69 @@ class ModelProfile:
 
 
 CATALOGUE: tuple[ModelProfile, ...] = (
+    ModelProfile(
+        name="openai/gpt-oss-20b",
+        label="GPT-OSS 20B",
+        tagline="Hosted on Groq. Answers in seconds, and the only production-grade option here.",
+        provider="groq",
+        good_at=[
+            "Speed — about 1,000 tokens/second, so a full answer in a few seconds",
+            "A 131,072-token context: the whole schema and long results fit easily",
+            "Multi-step questions, because it can afford several rounds of querying",
+        ],
+        weak_at=[
+            "Needs GROQ_API_KEY and sends your tool RESULTS (not your file) off-machine",
+            "Costs money, though very little: about $0.075 per million input tokens",
+        ],
+        typical_seconds=(2, 8),
+        reasons=True,
+        cost_in=0.075,
+        cost_out=0.30,
+        # Cheap and fast enough that the agent can look, think and look again — which is
+        # where analytical depth comes from, and what two local rounds cannot buy.
+        tool_rounds=4,
+    ),
+    ModelProfile(
+        name="qwen/qwen3.6-27b",
+        label="Qwen3.6 27B",
+        tagline="Hosted on Groq. A larger model for questions the others get wrong.",
+        provider="groq",
+        good_at=[
+            "More capable on reasoning and code than the 20B",
+            "Still fast — around 500 tokens/second",
+        ],
+        weak_at=[
+            "PREVIEW on Groq: no production guarantee, and it can be retired",
+            "Eight times the input cost of GPT-OSS 20B ($0.60 per 1M)",
+        ],
+        typical_seconds=(3, 12),
+        reasons=True,
+        cost_in=0.60,
+        cost_out=3.00,
+        preview=True,
+        tool_rounds=4,
+    ),
+    ModelProfile(
+        name="qwen/qwen3.8-27b",
+        label="Qwen3.8 27B",
+        tagline="Hosted on Groq. The newest Qwen, aimed at agentic work.",
+        provider="groq",
+        good_at=[
+            "The newest of the three, and built for tool-driven work",
+            "131,072-token context",
+        ],
+        weak_at=[
+            "PREVIEW on Groq: no production guarantee, and it can be retired",
+            "The most expensive here — $0.80 in, $4.00 out per 1M — and the slowest of "
+            "the hosted three",
+        ],
+        typical_seconds=(3, 14),
+        reasons=True,
+        cost_in=0.80,
+        cost_out=4.00,
+        preview=True,
+        tool_rounds=4,
+    ),
     ModelProfile(
         name="qwen3:4b",
         label="Qwen3 4B",

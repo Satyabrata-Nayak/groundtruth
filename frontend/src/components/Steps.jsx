@@ -12,7 +12,7 @@ import { formatMillis, formatSql } from '../format'
 //
 // Collapsed by default because a correct answer is the common case and the trace is
 // then noise. One click away because when it matters, it matters completely.
-export default function Steps({ steps, engine, model, thinking }) {
+export default function Steps({ steps, engine, model, thinking, chart }) {
   if (!steps?.length) return null
 
   return (
@@ -25,6 +25,26 @@ export default function Steps({ steps, engine, model, thinking }) {
           // eslint-disable-next-line react/no-array-index-key -- steps have no id
           <Step key={index} step={step} />
         ))}
+        {/* THE CHART BELONGS IN THE TRACE TOO.
+            It was missing, and its absence was a real gap rather than a cosmetic one:
+            "how it got there" is the page's honesty guarantee, and a chart appearing
+            with no entry explaining where it came from is exactly the kind of
+            unexplained artefact the section exists to prevent. It has no step because
+            nothing called a tool — the type is inferred from the shape of the result —
+            so it says that. */}
+        {chart?.chart && (
+          <div className="step">
+            <div className="step-head">
+              <span className="tool is-derived">{chart.chart.type} chart</span>
+              <span className="step-summary">
+                {chart.chart.derived_from
+                  ? `inferred from the shape of the result — ${chart.chart.point_count} point(s), no tool call`
+                  : `${chart.chart.point_count} point(s)`}
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Which model answered THIS question, not what the picker is set to now.
             Two answers to the same question can differ for no other reason. */}
         <p className="trace-foot">

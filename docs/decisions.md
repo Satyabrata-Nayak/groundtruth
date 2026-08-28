@@ -1374,3 +1374,125 @@ message.
 registry tool must be added here too. Generated wrappers needed a private attribute to
 carry the schema, and the descriptions a model actually reads deserve to be visible in the
 source rather than assembled at import time.
+
+---
+
+## D-045 — Groq is a second client, and the provider decides the loop's shape
+
+**Decision.** `app/agent/groq.py` speaks Groq's OpenAI-compatible API; `app/agent/llm.py`
+still speaks Ollama's. `app/agent/factory.py` picks one from the model name. Three hosted
+models join the picker: `openai/gpt-oss-20b` (production), and `qwen/qwen3.6-27b` and
+`qwen/qwen3.8-27b` (both preview).
+
+**Why two clients and not a branch.** The two APIs disagree about nearly every field that
+matters — endpoint, where `tool_calls` live, whether reasoning is a boolean or an effort
+level, whether `num_ctx` exists, how usage is reported. One client with seven `if`
+statements is one client that is wrong about one of them. Two classes returning the same
+`ModelTurn` means the agent loop never learns which it is holding.
+
+**Two translation details are silent failures rather than errors.** A tool result must
+carry `tool_call_id` matching the assistant turn that requested it — Ollama matches by
+name and ignores the field, OpenAI drops the message. And `arguments` must be a JSON
+*string*: sending an object is accepted and then ignored, which looks exactly like a model
+that forgot what it just asked for.
+
+**The provider decides how many tool rounds are affordable.** This was one constant and
+cannot stay one:
+
+```
+local   a round is 45-90 s      two is already the limit of patience
+Groq    a round is under 1 s    four is cheaper than one local round
+```
+
+Two rounds on Groq would leave the entire benefit unspent; four locally would be a
+six-minute wait. So `tool_rounds` is read from the catalogue, not from configuration.
+
+**And it decides whether sub-agents may fan out.** `ModelProfile.fans_out` is computed,
+not configured, because *the same architecture is right in one deployment and wrong in the
+other*: on one local GPU two concurrent calls split one card, while against a hosted API
+they are genuinely concurrent. The rewriter follows the same rule and now runs on the
+cheapest model of the **same provider** — a 1-second local call in front of a 2-second
+hosted answer is 50% overhead, where the same call in front of a 150-second local answer
+is 2%.
+
+**Measured, on the 541,909-row retail dataset:** 2.6 s against ~150 s locally, for the
+same question and the same answer.
+
+**Two things the free tier taught us immediately.**
+
+*The limit is 8,000 tokens per minute, not the 250,000 the plan comparison implies*, and
+one analysis of a wide schema is comfortably 2,500. The first version turned a 429 into a
+FAILED analysis that discarded two successful queries. A 429 is the one HTTP error that is
+neither a bug nor permanent — it is an instruction to wait, and Groq says exactly how long,
+so the client now honours it. Retries only on 429 and 5xx: a 401 will not be different in
+two seconds.
+
+*And a model failure mid-planning is no longer fatal.* If queries have already succeeded,
+the loop breaks out and answers from what it has, with a warning saying why. Losing real
+computed work to a transient rate limit was the worst trade in the system.
+
+**Tradeoffs.** The hosted path sends the schema, three sample rows and the tool results
+(capped at 50 rows) off-machine — never the file. The picker says so, and the local models
+remain fully capable, so "local-first" stays true as a default rather than as a slogan.
+
+---
+
+## D-046 — The cache key includes a prompt version
+
+**Decision.** `question_hash` hashes `PROMPT_VERSION` together with the normalised
+question.
+
+**Why.** A rule was added telling the model to write "84%" rather than
+"0.8399690286861813". The next run served the previous answer from cache in 552 ms, and
+the fix looked like it had simply not worked.
+
+A cache keyed only on the question pins yesterday's behaviour to today's build. Every
+input to an answer belongs in its key, and the prompt is an input — arguably the most
+important one, since it is the only one a developer changes.
+
+**Tradeoffs.** Bumping the version discards every entry, which is correct and cheap: the
+entries were computed under rules that no longer apply. It has to be bumped by hand, which
+is a step that can be forgotten — the alternative, hashing the prompt text itself, would
+invalidate the cache on a typo fix in a comment.
+
+---
+
+## D-047 — `create_chart` left the agent's action space
+
+**Decision.** `AGENT_TOOLS` no longer offers `create_chart`. It stays in the registry and
+stays published over MCP.
+
+**Why.** Since D-037 the chart type is inferred from the shape of the result, so the tool
+was never called — it sat in every prompt as a distractor, costing tokens and selection
+accuracy to advertise a capability the model had no reason to use. Removing an unused tool
+is not tidying: fewer tools measurably improves selection on small models.
+
+**And the chart now appears in "how it got there".** It was missing entirely, which was a
+real gap rather than a cosmetic one: that section is the page's honesty guarantee, and a
+chart appearing with no entry explaining where it came from is exactly the unexplained
+artefact the section exists to prevent. It has no step because nothing called a tool, so
+the trace says that — "bar chart · inferred from the shape of the result, no tool call".
+
+---
+
+## D-048 — An MCP server logs every call, because "is it being used?" is unanswerable otherwise
+
+**Decision.** Every tool call through `app/mcp_server.py` writes one line to stderr and,
+when `MCP_LOG_FILE` is set, appends it to a file. `--selftest` exercises the server
+in-process.
+
+**Why.** An MCP server runs as a subprocess of its client with **stdout owned by the
+protocol**, so there is no console to watch and a stray `print` would corrupt the JSON-RPC
+stream. Without a log there is no way to answer "did the client really call my tools, or
+did it answer from memory?" other than trusting its UI — and a model answering from memory
+looks identical to one that called a tool.
+
+stderr is free (the protocol does not use it) so it becomes the audit trail. The file
+exists because the question is usually asked *after* the fact, and reproducing it means
+asking the same question again.
+
+`--selftest` separates two failures that look the same: a green selftest with a silent log
+means the server works and the client is misconfigured.
+
+**Tradeoffs.** The log grows without rotation and records question-derived SQL, so it is
+gitignored. Off by default; stderr alone is enough for the interactive case.

@@ -39,10 +39,16 @@ from __future__ import annotations
 from app.agent.llm import LlmClient, ModelError
 from app.agent.memory import Turn
 
-# Only a genuinely small model belongs here. The whole argument is that this call is
-# cheap; running it on the analyst's own model would double the cost of every question
-# to save the analyst some reading.
-REWRITER_MODEL = "qwen2.5:3b-instruct"
+# The rewriter runs on the CHEAPEST model of the SAME provider as the analyst.
+#
+# Same provider, because mixing them makes the cheap step the slow one: a 1-second local
+# call in front of a 2-second Groq answer is 50% overhead, where the same call in front
+# of a 150-second local answer is 2%.
+#
+# Cheapest, because the whole argument for a sub-agent is that it costs less than the
+# model it serves. A sub-agent that costs what the main agent costs is just two main
+# agents, and the user waits for both.
+FALLBACK_REWRITER = "qwen2.5:3b-instruct"
 
 # A rewrite is a resolution of pronouns and ellipsis, not an essay. Anything longer than
 # this means the model started explaining rather than rewriting.
@@ -104,7 +110,13 @@ def needs_rewriting(question: str, turns: list[Turn]) -> bool:
     return len(question.split()) <= 3
 
 
-def rewrite(question: str, turns: list[Turn], *, client: LlmClient | None = None) -> str:
+def rewrite(
+    question: str,
+    turns: list[Turn],
+    *,
+    main_model: str | None = None,
+    client: LlmClient | None = None,
+) -> str:
     """The standalone form of `question`, or `question` itself.
 
     Never raises. Every failure path returns the original, because an unreachable
@@ -115,7 +127,10 @@ def rewrite(question: str, turns: list[Turn], *, client: LlmClient | None = None
 
     history = "\n".join(f"Q: {turn.question}\nA: {turn.answer}" for turn in turns)
     owns_client = client is None
-    client = client or LlmClient(model=REWRITER_MODEL, think=False)
+    if client is None:
+        from app.agent.factory import build_client, cheapest_peer
+
+        client = build_client(cheapest_peer(main_model) or FALLBACK_REWRITER, think=False)
 
     try:
         turn = client.chat(

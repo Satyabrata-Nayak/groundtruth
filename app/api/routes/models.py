@@ -30,26 +30,43 @@ def list_models() -> list[ModelOut]:
     """The selectable models, in catalogue order, each marked available or not."""
     settings = get_settings()
     pulled = _pulled_models(settings.ollama_base_url)
+    has_groq_key = bool(settings.groq_api_key)
 
     return [
         ModelOut(
             name=profile.name,
             label=profile.label,
             tagline=profile.tagline,
+            provider=profile.provider,
             good_at=profile.good_at,
             weak_at=profile.weak_at,
             speed=profile.speed_label,
+            cost=profile.cost_label,
+            preview=profile.preview,
             accuracy_pct=profile.accuracy_pct,
             reasons=profile.reasons,
             size_gb=profile.size_gb,
-            # An empty set means Ollama is unreachable, not that nothing is installed.
-            # Reporting everything as unavailable then would be a worse lie than
-            # reporting it available and failing with the message that says why.
-            available=not pulled or profile.name in pulled,
+            available=_available(profile, pulled, has_groq_key),
             is_default=profile.name == settings.llm_model,
         )
         for profile in CATALOGUE
     ]
+
+
+def _available(profile, pulled: set[str], has_groq_key: bool) -> bool:
+    """Can this model actually be used right now?
+
+    Availability means something different per provider, and conflating them would make
+    the picker lie. A local model is available when it is PULLED; a hosted one is
+    available when there is a KEY. Showing a Groq model as ready with no key would send
+    a user into a two-minute wait that ends in a 401.
+
+    An empty `pulled` set means Ollama is unreachable, not that nothing is installed —
+    so local models stay available and fail with the message that says why.
+    """
+    if profile.provider == "groq":
+        return has_groq_key
+    return not pulled or profile.name in pulled
 
 
 def _pulled_models(base_url: str) -> set[str]:

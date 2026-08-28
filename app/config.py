@@ -65,6 +65,16 @@ class Settings(BaseSettings):
     # load on the next one and blames the app.
     llm_keep_alive: str = "30m"
 
+    # --- Groq (hosted) ---
+    # Empty by default, and empty is a working configuration: with no key the hosted
+    # models are shown as unavailable and the local ones still answer everything.
+    groq_api_key: str = ""
+    groq_base_url: str = "https://api.groq.com/openai/v1"
+    # Far shorter than the local 300 s. A hosted model that has not answered in a minute
+    # is failing, not thinking, and waiting five minutes to learn that turns an error
+    # into a hang.
+    groq_timeout_s: float = 60.0
+
     # --- Agent (M5) ---
     # "agent" runs the language model; "fixed" runs M4's deterministic analysis. The
     # switch exists so the whole stack can be exercised without a model — on a machine

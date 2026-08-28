@@ -185,9 +185,12 @@ class ModelOut(BaseModel):
     name: str
     label: str
     tagline: str
+    provider: str
     good_at: list[str]
     weak_at: list[str]
     speed: str
+    cost: str
+    preview: bool
     accuracy_pct: int | None
     reasons: bool
     size_gb: float

@@ -51,6 +51,7 @@ from typing import Any
 
 from app.agent.contract import AnalysisFailed, Checkpoint, Emit
 from app.agent.evidence import chart_from_results, table_from_results
+from app.agent.factory import build_client, rounds_for
 from app.agent.llm import LlmClient, ModelError, ModelTurn, ModelUnavailable, ToolCall
 from app.agent.prompt import (
     ANSWER_SYSTEM_PROMPT,
@@ -74,7 +75,12 @@ ENGINE = "agent-v1"
 # Narrower than the full registry on purpose: `correlation` is a real tool that a 4B
 # model reaches for when it sees two numeric columns and the question said nothing
 # about a relationship, and every unused tool is a distractor in every prompt.
-AGENT_TOOLS = ["inspect_schema", "profile_column", "execute_sql", "compare_groups", "create_chart"]
+# `create_chart` is NOT here any more, and its removal is a fix rather than a trim.
+# Charts are now inferred from the shape of the result (`app/agent/charts.py`), so the
+# tool was never called — it sat in every prompt as a distractor, costing tokens and
+# selection accuracy to offer a capability the model had no reason to use. It remains in
+# the registry, and remains available over MCP, where the caller does the choosing.
+AGENT_TOOLS = ["inspect_schema", "profile_column", "execute_sql", "compare_groups"]
 
 # At most this many tool calls are honoured from one model turn.
 #
@@ -123,7 +129,7 @@ def run_agent_analysis(
     # own default. `llm_thinking` is tri-state — None means "nobody said", which is not
     # the same as False, and collapsing them would silently disable reasoning for every
     # request that did not mention it.
-    client = client or LlmClient(model=llm_model, think=llm_thinking)
+    client = client or build_client(llm_model, think=llm_thinking)
     try:
         return _run(
             client=client,
@@ -136,7 +142,11 @@ def run_agent_analysis(
             checkpoint=checkpoint,
             history=history,
             max_steps=settings.agent_max_steps,
-            max_tool_rounds=settings.agent_max_tool_rounds,
+            # How many rounds are AFFORDABLE depends on the provider, not on taste.
+            # A local round is 45-90 s and two is already the limit of patience; a Groq
+            # round is under a second, so the agent can look, think and look again —
+            # which is where analytical depth comes from.
+            max_tool_rounds=rounds_for(client.model),
             time_budget_s=settings.agent_time_budget_s,
         )
     finally:
@@ -224,7 +234,24 @@ def _run(
             warnings.append(f"the {time_budget_s:.0f}s time budget ran out while planning")
             break
 
-        turn = _model_turn(client, messages, specs, emit, label=f"planning (round {round_number})")
+        try:
+            turn = _model_turn(
+                client, messages, specs, emit, label=f"planning (round {round_number})"
+            )
+        except AnalysisFailed as failure:
+            # A model failure mid-planning is NOT necessarily fatal. If queries have
+            # already succeeded, the evidence is in hand and an answer can still be
+            # written from it — losing that to a transient condition would be the worst
+            # trade available.
+            #
+            # This is exactly what a Groq rate limit did on its first encounter: two
+            # successful queries, then a 429 on the third call, then a FAILED analysis
+            # with an empty result and nothing to show for the work already done.
+            if not has_evidence():
+                raise
+            warnings.append(f"stopped early: {failure}")
+            emit(EventKind.NOTE, f"continuing with what was computed: {failure}", None)
+            break
         calls_made += 1
 
         if turn.wants_tools:

@@ -53,14 +53,32 @@ In Claude Desktop's config:
 
     {"mcpServers": {"ground-truth": {
         "command": "uv",
-        "args": ["run", "--directory", "<repo>", "python", "-m", "app.mcp_server"]}}}
+        "args": ["run", "--directory", "<repo>", "python", "-m", "app.mcp_server"],
+        "env": {"MCP_LOG_FILE": "<repo>/mcp-calls.log"}}}}
+
+HOW TO PROVE IT IS ACTUALLY BEING USED
+--------------------------------------
+This is a real question and it has a real answer, because a client that answers from
+memory looks identical to one that called a tool.
+
+    1. `uv run python -m app.mcp_server --selftest` runs a call through the whole
+       server in-process and prints what came back. It proves the server works.
+    2. Set MCP_LOG_FILE and `tail -f` it. Every call appends one line with the tool, the
+       dataset, the arguments and the duration. If the file does not grow while the
+       client is answering, the client did not use the tools.
+    3. The numbers themselves. Ask for something no model could know — a sum over
+       541,909 rows — and check it against `SELECT sum(...)` yourself.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
+import sys
+import time
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -155,13 +173,56 @@ def _run(name: str, dataset_id: str, arguments: dict[str, Any]) -> str:
     the same entry point the local agent uses. A second execution path would mean a
     second set of guarantees about row caps, column resolution and error wording, and
     the two would drift.
+
+    EVERY CALL IS LOGGED, and that is a feature rather than debris. An MCP server runs
+    as a subprocess of its client with stdout owned by the protocol, so there is no
+    console to watch: without a log there is no way to answer "is it actually being
+    used?" other than trusting the client's UI. stderr is free — the protocol does not
+    use it — so it becomes the audit trail. See MCP_LOG_FILE.
     """
+    started = time.perf_counter()
     try:
         context = _context(dataset_id)
     except ValueError as exc:
+        _audit(name, dataset_id, arguments, ok=False, detail=str(exc), ms=0.0)
         return json.dumps({"ok": False, "error": str(exc)})
+
     result = get_registry().call(name, context, arguments)
+    _audit(
+        name,
+        dataset_id,
+        arguments,
+        ok=result.ok,
+        detail=result.summary if result.ok else (result.error or ""),
+        ms=(time.perf_counter() - started) * 1000,
+    )
     return json.dumps(result.to_model_payload(), indent=2, default=str)
+
+
+def _audit(
+    tool: str, dataset_id: str, arguments: dict[str, Any], *, ok: bool, detail: str, ms: float
+) -> None:
+    """One line per call, to stderr and optionally to a file.
+
+    A file, because the interesting question is usually asked after the fact: an MCP
+    client may not surface its subprocess's stderr at all, and "did Claude Desktop
+    really run my SQL, or did it answer from memory?" is not a question you want to
+    have to reproduce.
+    """
+    line = (
+        f"{datetime.now(UTC).isoformat(timespec='seconds')} "
+        f"{'ok ' if ok else 'ERR'} {tool} dataset={dataset_id[:8]} {ms:.0f}ms "
+        f"args={json.dumps(arguments, default=str)[:200]} :: {detail[:160]}"
+    )
+    log.info(line)
+    path = os.environ.get("MCP_LOG_FILE")
+    if path:
+        try:
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except OSError:
+            # An unwritable audit path must never break a working tool call.
+            pass
 
 
 # Written out rather than generated. A generated wrapper would need the schema poked in
@@ -246,13 +307,68 @@ def _context(dataset_id: str) -> ToolContext:
     return ToolContext(dataset_id=parsed, version=version)
 
 
+def selftest() -> int:
+    """Exercise the server in-process and print what came back.
+
+    Answers "is the server itself working?" without a client, which is the first thing
+    to establish when a client appears to be ignoring it: a green selftest and a silent
+    log means the problem is the client's configuration, not this code.
+    """
+    import asyncio
+
+    async def run() -> int:
+        datasets = json.loads((await mcp.call_tool("list_datasets", {})).content[0].text)
+        print(f"list_datasets -> {len(datasets)} dataset(s)")
+        if not datasets:
+            print("no datasets to test against; upload one first")
+            return 1
+
+        target = datasets[0]
+        print(f"  using {target['name']} ({target['rows']:,} rows)")
+
+        schema = json.loads(
+            (await mcp.call_tool("inspect_schema", {"dataset_id": target["dataset_id"]}))
+            .content[0]
+            .text
+        )
+        print(f"inspect_schema -> {schema.get('summary', 'ok')}")
+
+        blocked = json.loads(
+            (
+                await mcp.call_tool(
+                    "execute_sql",
+                    {"dataset_id": target["dataset_id"], "sql": "DROP TABLE dataset"},
+                )
+            )
+            .content[0]
+            .text
+        )
+        print(f"execute_sql(DROP) -> refused: {blocked.get('error', '')[:70]}")
+        print("\nserver is working. If a client still is not using it, the problem is")
+        print("the client's configuration — check its MCP server list and its logs.")
+        return 0
+
+    return asyncio.run(run())
+
+
 def main() -> None:
     # stdio, not HTTP: the client launches this as a subprocess, so there is no port to
     # secure and no way to reach it from another machine. For a server holding a
     # sandboxed SQL executor over local files, that is the right default.
-    logging.basicConfig(level=logging.INFO)
+    # stderr, because stdout IS the protocol on a stdio transport — a stray print
+    # would corrupt the JSON-RPC stream and look like a client bug.
+    logging.basicConfig(
+        level=logging.INFO,
+        stream=sys.stderr,
+        format="%(asctime)s mcp %(message)s",
+    )
+    log.info("ground-truth MCP server starting (stdio)")
+    if os.environ.get("MCP_LOG_FILE"):
+        log.info("auditing tool calls to %s", os.environ["MCP_LOG_FILE"])
     mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        raise SystemExit(selftest())
     main()

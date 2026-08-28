@@ -56,3 +56,6 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/settings.json
+
+# MCP tool-call audit log (see app/mcp_server.py)
+mcp-calls.log

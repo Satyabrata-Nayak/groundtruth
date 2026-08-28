@@ -181,6 +181,9 @@ const MODELS = [
     name: 'qwen3:4b',
     label: 'Qwen3 4B',
     tagline: 'Thinks before answering.',
+    provider: 'ollama',
+    cost: 'free',
+    preview: false,
     good_at: ['Rankings and totals — 100% on the evaluation set'],
     weak_at: ['Takes 1-3 minutes per question on a laptop GPU'],
     speed: '1-3 min',
@@ -194,6 +197,9 @@ const MODELS = [
     name: 'qwen2.5:3b-instruct',
     label: 'Qwen2.5 3B',
     tagline: 'Answers in seconds.',
+    provider: 'ollama',
+    cost: 'free',
+    preview: false,
     good_at: ['Speed — about 3 seconds instead of two minutes'],
     weak_at: ['Roughly half the overall accuracy of Qwen3'],
     speed: '~5s',
@@ -337,6 +343,10 @@ function expect(name, condition, detail = '') {
   expect('the evidence table is present', html.includes('United Kingdom') && html.includes('<table'))
   expect('the trace is collapsed but present', html.includes('How it got there'))
   expect('the SQL is a code block', html.includes('class="sql"') && html.includes('GROUP BY'))
+  // The chart was missing from "how it got there" entirely. It has no step because
+  // nothing called a tool, so the trace has to say that rather than stay silent.
+  expect('the chart appears in the trace', html.includes('bar chart'))
+  expect('and says it was inferred, not called', html.includes('inferred from the shape'))
 }
 
 // ── 3. the live status line, mid-run ─────────────────────────────────────────
@@ -475,6 +485,9 @@ for (const [kind, chart] of Object.entries(SHAPES)) {
   expect('strengths are listed', menu.textContent.includes('100% on the evaluation set'))
   expect('weaknesses are listed too', menu.textContent.includes('1-3 minutes per question'))
   expect('a model that is not pulled says so', menu.textContent.includes('ollama pull qwen2.5:3b-instruct'))
+  // Where a model RUNS is the first thing to know: one of these leaves the machine.
+  expect('each option says where it runs', (menu.textContent.match(/local/g) || []).length >= 2)
+  expect('each option shows what it costs', menu.textContent.includes('free'))
   expect(
     'an unavailable model cannot be chosen',
     [...root.querySelectorAll('.picker-option')].some((o) => o.disabled),
