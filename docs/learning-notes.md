@@ -1488,3 +1488,179 @@ to computation, tool results are the only source of numbers, the evidence table 
 from the results rather than the prose, and the figures in the prose get checked back
 against the results. The model is the part of the system with judgement and no
 authority.
+
+---
+
+## 38. Where the five minutes actually went
+
+A user reported ~5 minutes per question and "it sits on step 1 of 6 forever". Four
+separate causes, and my prior on which mattered was wrong for three of them.
+
+**Cause 1: the model was running on the CPU and nothing said so.** `ollama ps` is the
+only place this is visible:
+
+```
+qwen3:4b   5.4 GB   17%/83% CPU/GPU   16384      <- what we shipped
+qwen3:4b   4.1 GB   100% GPU          8192
+qwen3:4b   3.5 GB   100% GPU          4096
+```
+
+```
+ctx=4096    61.3 tok/s
+ctx=8192    61.4 tok/s
+ctx=16384   29.6 tok/s     exactly 2.07x slower
+```
+
+I had set 16384 deliberately, to avoid Ollama's silent 4096 truncation, and had never
+checked what it cost. The KV cache at 16k pushes a 6 GB card past its limit and Ollama
+spills layers to the CPU **without an error, a warning or a log line**. Half the wait
+was this.
+
+The lesson is not "use a smaller context". It is that a config value chosen to avoid one
+silent failure introduced another, and neither announced itself. Both were only findable
+by measuring the thing rather than reasoning about it.
+
+**Cause 2: the tools were attached to the turn that writes the answer.** Same
+conversation, same request for prose:
+
+```
+tools attached      41.8 s   2,098 output tokens   7,972 chars of thinking
+tools omitted        9.0 s     431 output tokens   1,547 chars of thinking
+```
+
+A model holding tools spends its reasoning re-deciding whether to use them — every
+turn, including the one where the results are already in front of it and the job is
+three sentences. This was the single largest software cause, and it was invisible in the
+code: the loop looked clean, and the expensive line was `tools=specs` on a turn that did
+not need them.
+
+**Cause 3: the loop asked the model for permission to stop.** The old structure ran
+turns with tools until the model returned no tool call — meaning the "I am done" turn
+was itself a full model call, with tools attached, and therefore the slowest in the run.
+It cost a minute to learn something the code could see for itself: a tool succeeded, so
+there is something to answer from.
+
+**Cause 4 (the display bug): "step 1 of 6" was reporting a step that had finished.**
+`step` came from the newest MODEL_CALL event, which is written when a call *returns*. So
+during the long second call the counter displayed the first one, and sat there for two
+minutes. Not slow — wrong. Deleted rather than fixed: the loop is now phases, not steps,
+and naming the phase is both honest and more useful.
+
+Result: ~257 s to ~90-190 s for the same question, on the same hardware.
+
+---
+
+## 39. `think: false` is not a speed lever, and I would have bet that it was
+
+The obvious move once the reasoning trace was identified as the cost: turn it off. Qwen3
+supports it. Measured, three runs each, at 8192 with the model fully on the GPU:
+
+```
+PLANNING TURN   think on    median 43.6 s   8,678 chars thinking   tool call correct 3/3
+                think OFF   median 42.1 s       0 chars            tool call correct 3/3
+
+ANSWER TURN     think on    median 48.8 s  10,176 chars thinking
+                think OFF   median 49.6 s       0 chars            ...and the answer began
+                                                                   "Okay, let's see. The
+                                                                    user wants to know..."
+```
+
+**It saves nothing.** The model generates the same number of tokens either way; `think:
+false` only moves them out of the `thinking` field and into `content`, where on the
+answer turn they become the answer. This is M1's finding arriving a third time, now with
+a timing column: reasoning is not an optional extra that can be switched off, it is how
+this model computes, and the flag only decides which field you find it in.
+
+So the real quantity is **output tokens**, and qwen3:4b emits ~2,500 of them per turn no
+matter how firmly the prompt asks for brevity. At 61 tok/s that is ~40 seconds a turn
+and ~90 seconds for a two-turn answer. That is the floor for this model on this GPU, and
+no prompt gets under it.
+
+The lever that remains is the model itself — a non-reasoning instruct model of similar
+size emits ~1 second of tokens for the same work. That is a different trade, measured
+separately, and it is about accuracy rather than about prompting.
+
+---
+
+## 40. A model turn is a thousand tool calls
+
+The number that reframed the whole design:
+
+```
+one tool call            30-70 milliseconds
+one turn of the model    45-90 seconds
+```
+
+The original prompt said "call ONE tool per turn, read its result before deciding the
+next step". That is standard agent advice and it reads as careful. Priced out, it says:
+spend a minute of a person's life to save a 4B model from reading two tables at once.
+
+Told it may batch, qwen3:4b asked for three queries in one 51-second turn — the top
+products, the busiest countries, and the total to put them against. Three facts for the
+price of one, and a better answer than any single query would have supported.
+
+This also answered a complaint I had first read as being about the model's intelligence:
+*"how it got there is always 2 steps, there is no creativity here."* The instinct is to
+let the agent take more steps. The economics say the opposite: **more analysis comes
+from a wider turn, not more turns.** More turns is the same analysis, slower.
+
+The general form, worth keeping: when an agent feels shallow, price its actions before
+adding any. If the reasoning is a thousand times more expensive than the acting, the
+design should act more per thought, not think more often.
+
+---
+
+## 41. The chart type is a property of the result, not an opinion
+
+The complaint was "it only ever gives horizontal bars — can it not do line, pie, box?"
+The instinct is to let the model choose, since choosing is what models are for.
+
+Priced: that is a tool call and a turn, so 45-90 seconds to pick a word from a list of
+five. And it is not really a judgement. Given the columns, their types and the row
+count, the answer is determined:
+
+```
+10 labels, 1 numeric value   bar
+a date or month column       line
+<= 8 positive shares         pie
+two numeric columns          scatter
+one numeric column           histogram
+a single row                 nothing
+```
+
+Deciding it in code is free, cannot pick a pie of four hundred slices, and leaves the
+model doing what it is actually good at — choosing *what to compute*. The prompt then
+tells it which shapes become which charts, so "show me the monthly trend" produces a
+query whose result IS a trend, and the trend is drawn as one. The model steers the chart
+without ever naming it.
+
+**The ordering of those rules is load-bearing, and I got it wrong first.** `Month` and
+`Revenue` are both numeric, so a "two numeric columns means scatter" test placed before
+the time test turned a monthly revenue series into a scatter plot. Time has to be
+checked first, because a time axis settles the question whatever else is in the row.
+
+**And matching column names needs words, not substrings.** `InvoiceDate` must count as
+time and `update` must not. A substring search cannot tell those apart; splitting the
+name into words on underscores and camelCase boundaries can. Meanwhile `year_revenue`
+contains the word "year" and holds millions — so a *numeric* column only counts as time
+if its values are also plausible as periods.
+
+---
+
+## 42. Two complaints about a table that were the same complaint
+
+> "every time it uses this table even if it is not required"
+
+The screenshot: a correlation of -0.0012, in a full bordered table with a sticky header,
+a column heading and a "1 row" caption, directly beneath a sentence reading "the
+correlation coefficient is -0.001". Beside it, a bar chart with one bar.
+
+Both are the same mistake — presenting the *form* of evidence where there is nothing to
+compare. A table exists to be scanned, sorted and compared across rows; with one cell it
+is furniture. A bar chart exists to compare magnitudes; with one bar it is decoration.
+
+The fix is not to hide the number. The premise of this system is that an answer is worth
+what its evidence is worth, so the figure stays — shown as what it is, a labelled
+computed value, and the chart is simply not drawn. **"No chart" is a legitimate output
+of a charting decision**, and a renderer that always produces something will always
+produce something meaningless eventually.

@@ -109,6 +109,7 @@ class LlmClient:
         temperature: float | None = None,
         think: bool | None = None,
         num_ctx: int | None = None,
+        keep_alive: str | None = None,
     ) -> None:
         settings = get_settings()
         self.base_url = (base_url or settings.ollama_base_url).rstrip("/")
@@ -117,6 +118,7 @@ class LlmClient:
         self.temperature = temperature if temperature is not None else settings.llm_temperature
         self.think = think if think is not None else settings.llm_think
         self.num_ctx = num_ctx if num_ctx is not None else settings.llm_num_ctx
+        self.keep_alive = keep_alive or settings.llm_keep_alive
         # connect=5s, read=timeout_s. A refused connection must fail immediately —
         # waiting out a 300 second read timeout to learn Ollama is not running is the
         # kind of delay that gets diagnosed as "the agent hung".
@@ -148,14 +150,25 @@ class LlmClient:
         is only actionable once its arguments are complete, and the UI's progress comes
         from the event trail, which is a better signal than tokens appearing.
 
-        Passing `tools=None` is how the loop asks for prose. Ollama will happily emit a
-        tool call whenever tools are present, so the final-answer turn removes them
-        entirely rather than asking the model nicely to stop.
+        Passing `tools=None` is how the loop asks for prose, and it is not a small
+        optimisation. MEASURED on an identical conversation:
+
+            tools attached      41.8 s   2,098 output tokens   7,972 chars of thinking
+            tools omitted        9.0 s     431 output tokens   1,547 chars of thinking
+
+        With tools in front of it the model re-deliberates whether to call another one,
+        every turn, at length. Removing them makes a tool call impossible rather than
+        discouraged AND makes the turn four times faster.
         """
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "stream": False,
+            # Keeping the model resident matters more than it looks. Ollama unloads
+            # after five minutes by default, and a cold load of qwen3:4b is 20-30
+            # seconds before a single token appears — charged to whichever question
+            # happens to be asked after a coffee break.
+            "keep_alive": self.keep_alive,
             "options": {"temperature": self.temperature, "num_ctx": self.num_ctx},
         }
         if tools:

@@ -17,6 +17,26 @@ export default function DataTable({ table }) {
   if (!table?.rows?.length) return null
 
   const { columns, rows } = table
+
+  // A ONE-CELL RESULT IS NOT A TABLE.
+  //
+  // "Is there a relationship between quantity and unit price?" produced a full bordered
+  // table, with a sticky header, a column title and a row-count caption, to hold the
+  // single value -0.0012 — directly beneath a sentence that had already said -0.001.
+  // All the furniture of a table and none of its purpose: nothing to scan, nothing to
+  // compare, nothing to sort.
+  //
+  // The evidence still has to be shown, because the whole premise is that an answer is
+  // worth what its evidence is worth. So it is shown as what it actually is: one
+  // computed figure, labelled.
+  if (rows.length === 1 && columns.length === 1) {
+    return (
+      <div className="metric">
+        <span className="metric-value">{formatCell(rows[0][0])}</span>
+        <span className="metric-label">{prettyColumn(columns[0])}</span>
+      </div>
+    )
+  }
   const numericColumn = columns.map((_, index) =>
     rows.some((row) => isNumeric(row[index])) &&
     rows.every((row) => row[index] === null || isNumeric(row[index])),

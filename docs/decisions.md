@@ -997,3 +997,158 @@ of skipping this one is running the suite against real data.
 
 **Tradeoffs.** A second database on the dev machine, and the first run pays for a
 migration.
+
+---
+
+## D-034 — The tools are taken away before the answer is written
+
+**Decision.** The agent runs at most `agent_max_tool_rounds` (2) turns with the tool
+definitions attached, leaves that phase the moment a tool has succeeded, and writes the
+answer in a separate call with `tools=None` **and a different system prompt**.
+
+**Why.** A user reported five minutes per question. The measurement, on an identical
+conversation asked for the same prose:
+
+```
+tools attached      41.8 s   2,098 output tokens   7,972 characters of thinking
+tools omitted        9.0 s     431 output tokens   1,547 characters of thinking
+```
+
+A model holding tools spends its reasoning re-arguing whether to call one. It does this
+on every turn, including the turn where it has all the results and only has to write
+three sentences. Removing them from the request makes a tool call impossible rather
+than discouraged, and makes the turn four times faster as a side effect.
+
+The system prompt is swapped too, for the same reason. The planning prompt is a page of
+rules about batching calls, avoiding identifier columns and repairing failed queries —
+none of which applies once the results are in. A small model does not ignore
+instructions it cannot use; it reasons about them.
+
+The old loop handed the model the tools again just so it could say "I am done". That
+turn cost a full model call AND was the slowest one in the run.
+
+**Tradeoffs.** The model cannot decide to run one more query after seeing its results,
+unless the first round failed outright. That is what batching (D-036) is for: it asks
+for everything at once instead. A genuinely iterative question is worse served, and
+`AGENT_MAX_TOOL_ROUNDS` is the dial for anyone who wants to pay for that.
+
+---
+
+## D-035 — The context window is 8192, because 16384 silently ran on the CPU
+
+**Decision.** `llm_num_ctx = 8192`.
+
+**Why.** Measured on the target hardware, a 6 GB RTX 4050, with qwen3:4b:
+
+```
+ctx=4096    61.3 tok/s   3.5 GB   100% GPU
+ctx=8192    61.4 tok/s   4.1 GB   100% GPU
+ctx=16384   29.6 tok/s   5.4 GB   17% CPU / 83% GPU     <- 2.07x slower
+```
+
+At 16k the KV cache pushes the model past available VRAM and Ollama spills layers to
+the CPU. **Nothing reports this.** No error, no warning, no log line — the same request
+simply takes twice as long, and `ollama ps` is the only place the split is visible. It
+had been in place since the agent was written, doubling every question.
+
+8192 rather than 4096, which was what was asked for: Ollama's *default* of 4096
+truncates silently, and a real conversation here is ~2,400 prompt tokens plus up to
+2,000 generated. Over 4096 the head of the prompt goes — which is the schema and the
+grounding rules — with no error. 8192 is measurably identical in speed and cannot
+truncate, so the risk buys nothing.
+
+**Tradeoffs.** A dataset with a very large schema, or a tool result near the 50-row cap
+with wide text columns, has less headroom. The row and character caps in
+`app/agent/analyst.py` already bound that; if it ever binds, the fix is a smaller
+result, not a bigger window that halves the speed of every request.
+
+**Also here:** `keep_alive: 30m`. Ollama unloads after five minutes by default, so a
+user who thinks for six between questions pays a 20-30 second cold load on the next one
+and reasonably concludes the app is slow.
+
+---
+
+## D-036 — Several tool calls per turn, rather than several turns
+
+**Decision.** Up to four tool calls from one model turn are executed, and the system
+prompt tells the model to ask for everything at once.
+
+**Why.** The economics, measured:
+
+```
+one tool call            30-70 milliseconds
+one turn of the model    45-90 seconds
+```
+
+A model turn is roughly a thousand times more expensive than the work it authorises. An
+earlier version of the prompt said "call ONE tool per turn", on the reasoning that a
+small model handles one result at a time better. That rule was costing a minute to save
+the model forty milliseconds of reading.
+
+Told it may batch, qwen3:4b asked for three queries in a single 51-second turn: the top
+products, the busiest countries, and the overall total. That is a better answer than any
+of them alone, for the price of the cheapest one.
+
+This is also the answer to "the trace is always two steps and there is no creativity in
+it". More analysis per question comes from a **wider** turn, not more turns. More turns
+is the same analysis, slower.
+
+**Tradeoffs.** The model has to anticipate what it needs before seeing any of it, and
+sometimes asks for something the first result makes redundant. A wasted 40 ms is not a
+cost worth optimising.
+
+---
+
+## D-037 — The chart type is inferred from the result, not chosen by the model
+
+**Decision.** `app/agent/charts.py` picks between bar, line, pie, scatter, histogram and
+**no chart** by inspecting the result's columns, types and row count. The model is told
+in its prompt which shapes produce which charts, so it can aim for one, but it never
+names a chart type.
+
+**Why.** Asking the model costs a turn, and a turn is 45-90 seconds. The type is also
+not really a judgement: it is a function of the shape, and the shape is fully known by
+the time the choice is made. Code decides it in microseconds and cannot pick `pie` for
+four hundred rows.
+
+```
+10 labels, 1 value       -> bar
+a date or month column   -> line
+<= 8 positive shares     -> pie
+two numeric columns      -> scatter
+one numeric column       -> histogram
+a single row             -> NO CHART
+```
+
+The last line is the one that prompted this. "Is there a relationship between quantity
+and unit price" produced a bar chart of one bar under a sentence that already said the
+number.
+
+The division is the same one the whole system runs on: the model chooses **what to
+compute**, and the computation decides how it looks. That is better than letting it name
+a type, because a model that has been told to draw a pie will draw a pie of forty
+slices.
+
+**Tradeoffs.** A user who wants a specific chart of a result cannot ask for one yet. The
+ordering of the rules is load-bearing and was wrong first time — `Month` and `Revenue`
+are both numeric, so a "two numeric columns means scatter" test that ran before the time
+test turned a monthly revenue series into a scatter plot. Time is now checked first.
+
+---
+
+## D-038 — A result that is one number is shown as a number
+
+**Decision.** A 1x1 evidence table renders as a labelled figure, not as a table.
+
+**Why.** It arrived as a full bordered table with a sticky header, a column title and a
+"1 row" caption, to hold `-0.0012` — directly beneath a sentence that had already said
+-0.001. All of the furniture of a table and none of its purpose: nothing to scan,
+nothing to compare, nothing to sort.
+
+The evidence still has to be shown, because the premise of the whole system is that an
+answer is worth what its evidence is worth. So it is shown as what it actually is: one
+computed figure, labelled with the expression that produced it.
+
+**Tradeoffs.** One more branch in the renderer. The alternative — hiding it entirely
+because the prose repeats it — would mean the one case where the answer and the evidence
+cannot be compared is the case with no evidence displayed.

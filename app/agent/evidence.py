@@ -35,12 +35,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.agent.charts import choose_chart
 from app.tools.base import ToolResult
 
-# A chart with more bars than this is a wall of noise, and one with a single bar is
-# not a comparison. Both are still shown as a table.
-_MAX_CHART_POINTS = 40
+# One bar is not a comparison. The upper bound now lives in `app/agent/charts.py`,
+# which decides the TYPE from the shape: many rows become a line rather than a wall
+# of unreadable bars.
 _MIN_CHART_POINTS = 2
+_HISTOGRAM_BUCKETS = 20
 
 # Tools whose payload is a table of results rather than a description of the dataset.
 # `inspect_schema` is excluded deliberately: it always succeeds and always returns
@@ -106,20 +108,33 @@ def chart_from_results(
 
 
 def _chart_from_table(table: dict[str, Any] | None, question: str) -> dict[str, Any] | None:
-    """A bar chart of a label column against a numeric column, or nothing.
+    """A chart of the result, of whatever type the result's shape calls for.
 
-    Returning None is a real outcome and not a failure. A single-row answer ("total
-    revenue was 9.7m") has nothing to compare, and a correlation has no categories; a
-    chart drawn anyway would be decoration presented as analysis.
+    Returning None is a real outcome and not a failure. A single-row answer ("the
+    correlation is -0.001") has nothing to compare; a chart drawn anyway would be
+    decoration presented as analysis — and a one-cell table under a sentence already
+    containing that number is the same mistake in a different shape.
     """
     if not table or not table["rows"]:
         return None
 
     columns: list[str] = table["columns"]
     rows: list[list[Any]] = table["rows"]
-    if len(columns) < 2 or not (_MIN_CHART_POINTS <= len(rows) <= _MAX_CHART_POINTS):
-        return None
 
+    kind = choose_chart(columns, rows, question)
+    if kind is None:
+        return None
+    if kind == "histogram":
+        return _histogram(columns, rows, question)
+    if kind == "scatter":
+        return _scatter(columns, rows, question)
+    return _categorical(kind, columns, rows, question)
+
+
+def _categorical(
+    kind: str, columns: list[str], rows: list[list[Any]], question: str
+) -> dict[str, Any] | None:
+    """bar, line or pie: one label column against one numeric column."""
     label_index = _first_label_column(columns, rows)
     value_index = _first_numeric_column(rows, skip=label_index)
     if label_index is None or value_index is None:
@@ -133,16 +148,89 @@ def _chart_from_table(table: dict[str, Any] | None, question: str) -> dict[str, 
     if len(points) < _MIN_CHART_POINTS:
         return None
 
+    return _spec(
+        kind,
+        question,
+        x={"column": columns[label_index], "kind": "categorical", "label": columns[label_index]},
+        y={"column": columns[value_index], "kind": "numeric", "label": columns[value_index]},
+        points=points,
+    )
+
+
+def _scatter(columns: list[str], rows: list[list[Any]], question: str) -> dict[str, Any] | None:
+    """Two numeric columns against each other."""
+    numeric = [i for i in range(len(columns)) if any(_is_number(row[i]) for row in rows)]
+    if len(numeric) < 2:
+        return None
+    x_index, y_index = numeric[0], numeric[1]
+    points = [
+        {"x": float(row[x_index]), "y": float(row[y_index])}
+        for row in rows
+        if _is_number(row[x_index]) and _is_number(row[y_index])
+    ]
+    if len(points) < _MIN_CHART_POINTS:
+        return None
+    return _spec(
+        "scatter",
+        question,
+        x={"column": columns[x_index], "kind": "numeric", "label": columns[x_index]},
+        y={"column": columns[y_index], "kind": "numeric", "label": columns[y_index]},
+        points=points,
+    )
+
+
+def _histogram(columns: list[str], rows: list[list[Any]], question: str) -> dict[str, Any] | None:
+    """One numeric column, bucketed.
+
+    Bucketed here rather than in SQL because the rows are already in hand: asking the
+    database again would be a round trip to recompute something we are holding.
+    """
+    index = next((i for i in range(len(columns)) if any(_is_number(r[i]) for r in rows)), None)
+    if index is None:
+        return None
+    values = sorted(float(row[index]) for row in rows if _is_number(row[index]))
+    if len(values) < _MIN_CHART_POINTS:
+        return None
+
+    low, high = values[0], values[-1]
+    if low == high:
+        return None
+
+    bucket_count = min(_HISTOGRAM_BUCKETS, max(5, len(values) // 4))
+    width = (high - low) / bucket_count
+    counts = [0] * bucket_count
+    for value in values:
+        # The maximum lands exactly on the top edge and would index one past the end.
+        slot = min(int((value - low) / width), bucket_count - 1)
+        counts[slot] += 1
+
+    points = [
+        {"x": _bucket_label(low + i * width, low + (i + 1) * width), "y": count}
+        for i, count in enumerate(counts)
+    ]
+    return _spec(
+        "histogram",
+        question,
+        x={"column": columns[index], "kind": "numeric", "label": columns[index]},
+        y={"column": "count", "kind": "numeric", "label": "rows"},
+        points=points,
+    )
+
+
+def _spec(
+    kind: str,
+    question: str,
+    *,
+    x: dict[str, Any],
+    y: dict[str, Any],
+    points: list[dict[str, Any]],
+) -> dict[str, Any]:
     return {
         "chart": {
-            "type": "bar",
-            "title": _title(columns[value_index], columns[label_index], question),
-            "x": {
-                "column": columns[label_index],
-                "kind": "categorical",
-                "label": columns[label_index],
-            },
-            "y": {"column": columns[value_index], "kind": "numeric", "label": columns[value_index]},
+            "type": kind,
+            "title": _title(y["label"], x["label"], question),
+            "x": x,
+            "y": y,
             "data": points,
             "point_count": len(points),
             # Says where this came from, so a spec derived from a result table is never
@@ -150,6 +238,11 @@ def _chart_from_table(table: dict[str, Any] | None, question: str) -> dict[str, 
             "derived_from": "the final query result",
         }
     }
+
+
+def _bucket_label(low: float, high: float) -> str:
+    digits = 0 if abs(high - low) >= 10 else 2
+    return f"{low:,.{digits}f}-{high:,.{digits}f}"
 
 
 def _first_label_column(columns: list[str], rows: list[list[Any]]) -> int | None:
@@ -162,7 +255,7 @@ def _first_label_column(columns: list[str], rows: list[list[Any]]) -> int | None
 
 
 def _first_numeric_column(rows: list[list[Any]], *, skip: int | None) -> int | None:
-    """The first numeric column that is not the label, preferring one with values."""
+    """The first numeric column that is not the label."""
     width = len(rows[0])
     for index in range(width):
         if index == skip:
@@ -185,8 +278,8 @@ def _title(value_column: str, label_column: str, question: str) -> str:
     """Prefer the question as the title; fall back to describing the axes.
 
     The question is what the person actually wants the chart labelled with, and it is
-    already known to be short because the API caps it. Anything long or empty falls
-    back to a mechanical description rather than being truncated mid-word.
+    already known to be short because the API caps it. Anything long or empty falls back
+    to a mechanical description rather than being truncated mid-word.
     """
     cleaned = " ".join(question.split())
     if 0 < len(cleaned) <= 80:

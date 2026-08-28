@@ -53,6 +53,7 @@ from app.agent.contract import AnalysisFailed, Checkpoint, Emit
 from app.agent.evidence import chart_from_results, table_from_results
 from app.agent.llm import LlmClient, ModelError, ModelTurn, ModelUnavailable, ToolCall
 from app.agent.prompt import (
+    ANSWER_SYSTEM_PROMPT,
     EMPTY_TURN_PROMPT,
     FORCE_ANSWER_PROMPT,
     NO_EVIDENCE_PROMPT,
@@ -75,10 +76,16 @@ ENGINE = "agent-v1"
 # about a relationship, and every unused tool is a distractor in every prompt.
 AGENT_TOOLS = ["inspect_schema", "profile_column", "execute_sql", "compare_groups", "create_chart"]
 
-# At most this many tool calls are honoured from one model turn. Qwen3 occasionally
-# emits the same call three times in parallel; running all of them costs seconds and
-# teaches it nothing.
-_MAX_CALLS_PER_TURN = 2
+# At most this many tool calls are honoured from one model turn.
+#
+# Raised from 2 to 4 once the economics were measured. A tool call costs 30-70 ms and a
+# model turn costs 45-90 seconds, so four queries in one round are indistinguishable in
+# time from one — and they are the difference between "the top 10 products" and "the top
+# products, the busiest countries, and the overall total to put them against".
+#
+# The cap still exists because qwen3 sometimes emits the same call three times in
+# parallel. Duplicates within a turn are dropped before this cap applies.
+_MAX_CALLS_PER_TURN = 4
 
 # A tool result is a message in a context window. `max_tool_result_rows` already caps
 # the rows; this caps the characters, for the case of 50 rows of long text.
@@ -121,6 +128,7 @@ def run_agent_analysis(
             emit=emit,
             checkpoint=checkpoint,
             max_steps=settings.agent_max_steps,
+            max_tool_rounds=settings.agent_max_tool_rounds,
             time_budget_s=settings.agent_time_budget_s,
         )
     finally:
@@ -139,6 +147,7 @@ def _run(
     emit: Emit,
     checkpoint: Checkpoint,
     max_steps: int,
+    max_tool_rounds: int,
     time_budget_s: float,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + time_budget_s
@@ -177,57 +186,83 @@ def _run(
     chosen_from = len(results)
     nudged_for_evidence = False
     answer = ""
+    calls_made = 0
 
-    # --- 2. the loop ---------------------------------------------------------------
-    for step in range(1, max_steps + 1):
+    def has_evidence() -> bool:
+        """Did anything the MODEL chose to run succeed?
+
+        Not "anything but inspect_schema". Excluding that tool by name once flagged a
+        correct refusal: asked for customer ages on a dataset that has none, the agent
+        inspected the schema, said so, and was told it had "written an answer without
+        running a query". Establishing that data cannot answer a question is done by
+        looking at the data. The automatic pre-fetch is excluded because nobody chose it.
+        """
+        return any(r.ok for r in results[chosen_from:])
+
+    # --- 2. planning: the only phase that carries the tools --------------------------
+    #
+    # Each round, the model may ask for several tools at once and they all run before it
+    # sees any of them. That is deliberate: a tool costs 40 ms and a model turn costs 45
+    # seconds, so three queries in one round are free next to three rounds of one.
+    #
+    # The loop leaves as soon as there is something to answer from. Handing the model
+    # the tools again to let it say "I am done" costs a full turn AND makes that turn
+    # four times slower, because a model looking at tools re-argues whether to use them.
+    for round_number in range(1, max_tool_rounds + 1):
         checkpoint()
 
         if time.monotonic() >= deadline:
-            warnings.append(
-                f"stopped after {step - 1} step(s): the {time_budget_s:.0f}s time budget ran out"
-            )
+            warnings.append(f"the {time_budget_s:.0f}s time budget ran out while planning")
             break
 
-        turn = _model_turn(client, messages, specs, emit, step=step, max_steps=max_steps)
+        turn = _model_turn(client, messages, specs, emit, label=f"planning (round {round_number})")
+        calls_made += 1
 
-        if not turn.wants_tools:
-            answer = _clean(turn.content)
-            # Evidence is anything the MODEL chose to run and that succeeded — not
-            # "anything but inspect_schema". The first version excluded that tool by
-            # name and then flagged a correct refusal: asked for customer ages on a
-            # dataset that has none, the agent inspected the schema, said so, and was
-            # told it had "written an answer without running a query". Looking at the
-            # data IS how you establish that the data cannot answer the question.
-            #
-            # The schema fetch done automatically before the loop is excluded, because
-            # nobody chose it. `chosen` counts only calls the model made.
-            has_evidence = any(r.ok for r in results[chosen_from:])
-            if answer and (has_evidence or nudged_for_evidence):
-                if not has_evidence:
-                    warnings.append(
-                        "the answer was written without running a query against the data"
-                    )
+        if turn.wants_tools:
+            messages.append(_assistant_message(turn))
+            for call in _calls_to_run(turn.tool_calls):
+                checkpoint()
+                messages.append(
+                    _run_one_call(call, registry, context, steps, results, emit, attempted)
+                )
+            # Something worked, so there is an answer to write. Another tools-attached
+            # round would only re-litigate a decision already made.
+            if has_evidence():
                 break
-            # Either an empty turn, or an answer with nothing behind it. Both get one
-            # correction, and the correction is different for each.
-            messages.append({"role": "assistant", "content": turn.content})
-            if answer:
-                nudged_for_evidence = True
-                messages.append({"role": "user", "content": NO_EVIDENCE_PROMPT})
-            else:
-                messages.append({"role": "user", "content": EMPTY_TURN_PROMPT})
-            answer = ""
+            # Everything failed. THIS is what the second round is for: the errors name
+            # the valid columns, and a repair usually lands.
             continue
 
-        messages.append(_assistant_message(turn))
-        for call in _calls_to_run(turn.tool_calls):
-            checkpoint()
-            messages.append(_run_one_call(call, registry, context, steps, results, emit, attempted))
-    else:
-        warnings.append(f"stopped after the {max_steps}-step budget was used up")
+        # No tool calls: the model believes it can answer already.
+        answer = _clean(turn.content)
+        if has_evidence() or nudged_for_evidence:
+            if not has_evidence():
+                warnings.append("the answer was written without running a query against the data")
+            break
 
-    # --- 3. make it finish -----------------------------------------------------------
-    if not answer:
+        # An answer with nothing behind it, or an empty turn. Each gets one correction,
+        # and the correction differs. `nudged_for_evidence` is what makes it ONE: without
+        # it the next ungrounded answer is pushed back again, and an agent that has
+        # decided the data cannot answer the question is asked to query it forever.
+        messages.append({"role": "assistant", "content": turn.content})
+        if answer:
+            nudged_for_evidence = True
+            messages.append({"role": "user", "content": NO_EVIDENCE_PROMPT})
+        else:
+            messages.append({"role": "user", "content": EMPTY_TURN_PROMPT})
+        answer = ""
+
+    # --- 3. the answer, written by a call with NO TOOLS ATTACHED ---------------------
+    #
+    # This is the single biggest speed decision in the agent. The same conversation,
+    # asked for the same prose:
+    #
+    #     tools attached      41.8 s   2,098 output tokens   7,972 chars of thinking
+    #     tools omitted        9.0 s     431 output tokens   1,547 chars of thinking
+    #
+    # A model holding tools spends its reasoning deciding whether to use them again.
+    # Take them away and it does the job it was asked to do.
+    if not answer and calls_made < max_steps:
         answer = _final_answer(client, messages, emit)
 
     table = table_from_results(results)
@@ -272,11 +307,10 @@ def _run(
 def _model_turn(
     client: LlmClient,
     messages: list[dict[str, Any]],
-    specs: list[dict[str, Any]],
+    specs: list[dict[str, Any]] | None,
     emit: Emit,
     *,
-    step: int,
-    max_steps: int,
+    label: str,
 ) -> ModelTurn:
     """One call to the model, recorded as an event.
 
@@ -295,13 +329,13 @@ def _model_turn(
     intent = (
         ", ".join(call.name or "?" for call in turn.tool_calls)
         if turn.tool_calls
-        else "writing the answer"
+        else "ready to answer"
     )
     emit(
         EventKind.MODEL_CALL,
-        f"step {step}/{max_steps}: {intent} ({turn.wall_s:.1f}s)",
+        f"{label}: {intent} ({turn.wall_s:.1f}s)",
         {
-            "step": step,
+            "phase": label,
             "seconds": round(turn.wall_s, 2),
             "prompt_tokens": turn.prompt_tokens,
             "output_tokens": turn.output_tokens,
@@ -314,18 +348,39 @@ def _model_turn(
 
 
 def _final_answer(client: LlmClient, messages: list[dict[str, Any]], emit: Emit) -> str:
-    """Ask for prose with the tools removed, so a tool call is impossible.
+    """Ask for prose with the tools removed, so a tool call is impossible — and fast.
 
     Failures here are swallowed: the tool results are already in hand, and losing a
     completed analysis because the summarising call timed out would be the worst
     possible trade.
     """
-    emit(EventKind.NOTE, "budget used up; asking for a final answer", None)
-    messages.append({"role": "user", "content": FORCE_ANSWER_PROMPT})
+    # The SYSTEM PROMPT IS SWAPPED, not just the tools. The planning prompt is a page of
+    # rules about choosing tools, batching calls and repairing failed queries, none of
+    # which applies once the results are in — and a small model does not ignore
+    # instructions it cannot use, it reasons about them at length. Removing the tools
+    # took the answer turn from 165 s to 56 s; removing the rules it no longer needs is
+    # the rest of that same saving.
+    conversation = [
+        {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
+        *messages[1:],
+        {"role": "user", "content": FORCE_ANSWER_PROMPT},
+    ]
     try:
-        return _clean(client.chat(messages, tools=None).content)
+        turn = client.chat(conversation, tools=None)
     except ModelError:
         return ""
+    emit(
+        EventKind.MODEL_CALL,
+        f"writing the answer ({turn.wall_s:.1f}s)",
+        {
+            "phase": "writing the answer",
+            "seconds": round(turn.wall_s, 2),
+            "prompt_tokens": turn.prompt_tokens,
+            "output_tokens": turn.output_tokens,
+            "thinking_characters": len(turn.thinking),
+        },
+    )
+    return _clean(turn.content)
 
 
 # --------------------------------------------------------------------------------

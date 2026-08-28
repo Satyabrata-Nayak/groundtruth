@@ -33,9 +33,26 @@ observed failure:
     "derived metrics need execute_sql"                   compare_groups cannot express
                                                          Quantity * UnitPrice
     "check the schema before naming a column"            invented column names
-    "one tool call per turn"                             qwen3 emits parallel calls it
-                                                         cannot reason about together
+    "do not do arithmetic yourself"                      53,847 - 47,363 = "16,484"
     "say so when the data cannot answer it"              the plausible-fabrication mode
+    "ask for everything in one turn"                     see below
+
+ASKING FOR EVERYTHING AT ONCE IS THE MOST VALUABLE RULE HERE
+------------------------------------------------------------
+An early version told the model to call ONE tool per turn, on the reasoning that a
+small model reasons better about one result at a time. Measured against the clock, that
+rule was expensive nonsense:
+
+    one tool call            30-70 milliseconds
+    one turn of the model    45-90 seconds
+
+So a turn is roughly a thousand times more expensive than the work it authorises, and
+"which country earns most" and "what is the overall total" as two turns costs two
+minutes to save a model forty milliseconds of thinking. Told it may batch, qwen3:4b
+duly asked for three queries in one 51-second turn.
+
+This is also the answer to "the trace is always two steps": more analysis per question
+comes from a wider turn, not from more turns.
 """
 
 from __future__ import annotations
@@ -57,9 +74,17 @@ tools against it, and you never answer from memory or intuition.
 The dataset is a single SQL table named "{TABLE_NAME}". You are told its schema below.
 
 HOW TO WORK
-1. Decide what needs to be computed to answer the question.
-2. Call ONE tool per turn. Read its result before deciding the next step.
-3. When you have the numbers, stop calling tools and write the answer as plain text.
+1. Work out everything that needs computing to answer the question well.
+2. Ask for ALL OF IT IN ONE TURN. You may call several tools at once, and you should:
+   every tool you name runs before you see any result, each takes milliseconds, and a
+   turn of yours costs the person waiting nearly a minute. Four queries in one turn are
+   free; four turns of one query each are four minutes of somebody's life.
+3. Then write the answer as plain text.
+
+BE GENEROUS ABOUT WHAT YOU ASK FOR, since it is free. A ranking is more useful beside
+the total it is a share of; a "highest" is more useful beside the average; a trend is
+more useful beside the size of the thing that is trending. If a second query would make
+the answer meaningfully better, ask for it in the same turn.
 
 RULES YOU MUST FOLLOW
 - Every number, name, date and ranking in your answer must come from a tool result in
@@ -84,6 +109,10 @@ RULES YOU MUST FOLLOW
   currency. Inventing one is inventing a fact.
 - If a tool returns an error, read it: it names the valid columns or the correct
   argument. Fix the call rather than repeating it.
+- A chart is drawn for you automatically from your final result, and its type is chosen
+  from the shape of that result. So think about the shape: a date or month column with
+  a value gives a line, a handful of categories with shares gives a pie, two numeric
+  columns give a scatter, a ranking gives bars. You do not need to ask for a chart.
 - If the data genuinely cannot answer the question, say that plainly and say what the
   data does contain. A wrong answer is far worse than "this dataset does not record
   that".
@@ -187,11 +216,36 @@ def build_user_prompt(question: str) -> str:
     )
 
 
+# The system prompt for the answer turn, replacing the planning one entirely.
+#
+# The planning prompt is a page of rules about choosing tools, batching calls, avoiding
+# identifier columns and repairing failed queries. NONE of it applies once the results
+# are in — and a small model does not ignore instructions it cannot use, it reasons
+# about them. Measured on the real thing: the answer turn was spending 10,866 characters
+# of thinking with the full prompt in front of it.
+#
+# So the answer turn gets a prompt about writing, and keeps only the two rules that
+# still bind: every figure comes from a result, and nothing is invented.
+ANSWER_SYSTEM_PROMPT = """\
+You are a careful data analyst writing the final answer. The results you need are
+in the conversation above and no more work is required.
+
+Write two to four sentences of plain prose. Lead with the direct answer and its figure,
+then the one or two comparisons that make it meaningful, then any caveat that matters.
+
+- Every number you write must appear in a result above. Do not calculate anything new,
+  including differences, percentages and ratios.
+- Do not add a currency symbol or a unit that is not in the data.
+- The full results table is displayed to the reader directly beneath your answer, so do
+  not list its rows.
+- No markdown, no headings, no bullet points, no code blocks.
+
+Do not deliberate. You have the numbers; write the sentences."""
+
 FORCE_ANSWER_PROMPT = (
-    "You have used your tool budget. Do not call any more tools. Write your final "
-    "answer now using only the results already in this conversation. If those results "
-    "are not enough to answer the question, say exactly what you established and what "
-    "is still missing."
+    "Write the final answer now, in two to four sentences of plain prose, using only "
+    "the results above. If those results are not enough to answer the question, say "
+    "exactly what you established and what is still missing."
 )
 
 NO_EVIDENCE_PROMPT = (

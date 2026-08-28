@@ -165,8 +165,13 @@ const EVENTS = [
   {
     id: 5,
     kind: 'MODEL_CALL',
-    message: 'step 1/6: execute_sql (53.7s)',
-    payload: { step: 1, seconds: 53.7, output_tokens: 1303, prompt_tokens: 2036 },
+    message: 'planning (round 1): execute_sql (53.7s)',
+    payload: {
+      phase: 'planning (round 1)',
+      seconds: 53.7,
+      output_tokens: 1303,
+      prompt_tokens: 2036,
+    },
     created_at: '',
   },
 ]
@@ -315,17 +320,94 @@ function expect(name, condition, detail = '') {
 
   expect('no runtime errors while running', errors.length === 0, errors.join(' | '))
   expect('a live status line is shown', html.includes('live-now'))
-  // The last event is MODEL_CALL naming a tool, so the phase running NOW is the
-  // decision that follows it. This is the assertion that protects the whole point of
-  // phases.js: the line describes what is happening, not what already happened.
+  // The last event is a MODEL_CALL that named a tool, so what is happening NOW is that
+  // tool running. This assertion protects the whole point of phases.js: the line
+  // describes what is happening, not what already happened.
   expect(
     'the phase describes what is happening now',
-    html.includes('Deciding what to compute'),
+    html.includes('Running the queries'),
     html.match(/live-now[\s\S]{0,220}/)?.[0]?.replace(/<[^>]+>/g, ' '),
   )
-  expect('the step counter is shown', html.includes('step 1 of 6'))
+  // There is deliberately no step counter: it read from the newest MODEL_CALL, which
+  // is written when a call FINISHES, so it always showed the step that had just ended.
+  expect('no misleading step counter', !/step \d+ of \d+/.test(html))
   expect('finished phases keep their ticks', html.includes('live-tick'))
   expect('the composer is locked while working', html.includes('disabled'))
+}
+
+// ── 4. the chart types, and the result that should not be a table ────────────
+//
+// The backend picks the type from the shape of the result; these check that each pick
+// actually renders. `metric` is the one that matters most: a correlation of -0.0012
+// used to arrive as a full bordered table with a sticky header holding one cell,
+// directly under a sentence that already said the number.
+
+const SHAPES = {
+  line: {
+    type: 'line', title: 'Revenue by month',
+    x: { label: 'Month' }, y: { label: 'Revenue' },
+    data: [
+      { x: '2011-01', y: 100 }, { x: '2011-02', y: 140 }, { x: '2011-03', y: 90 },
+      { x: '2011-04', y: 220 },
+    ],
+    point_count: 4,
+  },
+  pie: {
+    type: 'pie', title: 'Share of revenue',
+    x: { label: 'Segment' }, y: { label: 'RevenueShare' },
+    data: [{ x: 'A', y: 40 }, { x: 'B', y: 35 }, { x: 'C', y: 25 }],
+    point_count: 3,
+  },
+  scatter: {
+    type: 'scatter', title: 'Quantity against unit price',
+    x: { label: 'Quantity' }, y: { label: 'UnitPrice' },
+    data: Array.from({ length: 20 }, (_, i) => ({ x: i, y: i * 2.5 })),
+    point_count: 20,
+  },
+  histogram: {
+    type: 'histogram', title: 'Distribution of order value',
+    x: { label: 'OrderValue' }, y: { label: 'rows' },
+    data: [{ x: '0-10', y: 4 }, { x: '10-20', y: 9 }, { x: '20-30', y: 2 }],
+    point_count: 3,
+  },
+}
+
+for (const [kind, chart] of Object.entries(SHAPES)) {
+  RESULT.chart = { chart }
+  const { window, errors } = await render('done')
+  const root = window.document.getElementById('root')
+  const textarea = root.querySelector('textarea')
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+  setter.call(textarea, 'a question')
+  textarea.dispatchEvent(new window.Event('input', { bubbles: true }))
+  root.querySelector('.send').dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
+  for (let i = 0; i < 8; i += 1) await new Promise((r) => setTimeout(r, 60))
+  const html = root.innerHTML
+
+  expect(`${kind}: renders without error`, errors.length === 0, errors.join(' | '))
+  const marker = { line: 'line-path', pie: 'pie-wrap', scatter: 'scatter-dot', histogram: 'chart-bar' }[kind]
+  expect(`${kind}: draws its own shape`, html.includes(marker))
+}
+
+{
+  // A single computed figure: no chart, and a metric rather than a table.
+  RESULT.chart = null
+  RESULT.table = { columns: ['corr(Quantity, UnitPrice)'], rows: [[-0.0012]] }
+  RESULT.warnings = []
+  const { window, errors } = await render('done')
+  const root = window.document.getElementById('root')
+  const textarea = root.querySelector('textarea')
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+  setter.call(textarea, 'is there a relationship?')
+  textarea.dispatchEvent(new window.Event('input', { bubbles: true }))
+  root.querySelector('.send').dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
+  for (let i = 0; i < 8; i += 1) await new Promise((r) => setTimeout(r, 60))
+  const html = root.innerHTML
+
+  expect('one figure renders without error', errors.length === 0, errors.join(' | '))
+  expect('one figure is a metric, not a table', html.includes('metric-value'))
+  expect('one figure gets no <table> furniture', !html.includes('<table'))
+  expect('one figure is still labelled', html.includes('corr(Quantity, UnitPrice)'))
 }
 
 // ── report ───────────────────────────────────────────────────────────────────

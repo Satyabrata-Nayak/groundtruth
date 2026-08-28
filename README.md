@@ -119,9 +119,18 @@ ollama serve
 ollama pull qwen3:4b
 ```
 
-Expect **30 seconds to three minutes** per question on a laptop. That is a local 4B
+Expect **90 seconds to three minutes** per question on a laptop. That is a local 4B
 model reasoning, not the plumbing: the queue answers `POST /analyses` in about 4 ms and
 every step appears in the UI as it happens.
+
+> **Why it takes that long, and how to make it faster.** qwen3 is a *reasoning* model:
+> it emits ~2,500 tokens of thinking per turn whatever you ask of it, and at ~61 tok/s
+> on a 6 GB laptop GPU that is ~40 seconds a turn. Setting `think: false` does not help
+> — measured at 42.1 s versus 43.6 s, because the model produces the same tokens and
+> merely moves them from `thinking` into `content`. The lever is the model:
+> `ollama pull qwen2.5:3b-instruct` and `LLM_MODEL=qwen2.5:3b-instruct` answers in
+> about three seconds instead of ninety. See `docs/benchmarking.md` for what that costs
+> in accuracy.
 
 ### What actually happens when you ask
 

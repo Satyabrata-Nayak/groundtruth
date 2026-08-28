@@ -46,19 +46,41 @@ class Settings(BaseSettings):
     # the model reasons regardless and, told not to, does it inside `content` where it
     # then has to be stripped with a regex. Reasoning stays on, in its own field.
     llm_think: bool | None = None
-    # Ollama's default context is 4096 tokens and it TRUNCATES SILENTLY. A schema, three
-    # sample rows and two tool results pass that without warning, and the model then
-    # answers from a prompt whose first half is missing. Set explicitly, always.
-    llm_num_ctx: int = 16384
+    # MEASURED, not chosen. On a 6 GB RTX 4050 running qwen3:4b:
+    #
+    #     ctx=4096   61.3 tok/s   3.5 GB   100% GPU
+    #     ctx=8192   61.4 tok/s   4.1 GB   100% GPU
+    #     ctx=16384  29.6 tok/s   5.4 GB   17% CPU / 83% GPU   <- 2.07x slower
+    #
+    # The KV cache at 16k pushes the model past available VRAM and Ollama silently
+    # spills layers to the CPU. Nothing reports this; it just takes twice as long.
+    #
+    # 8192 rather than 4096 because Ollama's default of 4096 TRUNCATES SILENTLY, and a
+    # real conversation here runs ~2,400 prompt tokens plus up to 2,000 generated —
+    # over 4096, which would drop the head of the prompt (the schema and the grounding
+    # rules) with no error. 8192 is measurably as fast and cannot truncate.
+    llm_num_ctx: int = 8192
+    # How long Ollama keeps the model in VRAM after a request. The default is 5
+    # minutes, so a user who thinks for six between questions pays a 20-30 second cold
+    # load on the next one and blames the app.
+    llm_keep_alive: str = "30m"
 
     # --- Agent (M5) ---
     # "agent" runs the language model; "fixed" runs M4's deterministic analysis. The
     # switch exists so the whole stack can be exercised without a model — on a machine
     # with no Ollama, in CI, and while diagnosing whether a failure is the plumbing.
     analysis_engine: str = "agent"
-    # How many model turns one analysis may take. Each is a decision; six is enough for
-    # inspect, query, refine, chart, answer with room for one repair.
+    # An overall ceiling on model calls, as a backstop. The loop's real bound is
+    # `agent_max_tool_rounds` below; this exists so no path can spin.
     agent_max_steps: int = 6
+    # How many times the model may be handed the tools. MEASURED: attaching the tool
+    # definitions makes it reason 5x longer (1,547 -> 7,972 characters of thinking on
+    # an identical conversation), because with tools in front of it the model
+    # re-deliberates "should I call something else?" every single turn. So the tools go
+    # away as soon as there is something to answer from, and the answer is written by a
+    # call that has no tools attached. Two rounds leaves room for one repair after a
+    # failed query; the model is told to ask for everything it needs at once instead.
+    agent_max_tool_rounds: int = 2
     # ...and how long it may take in total, whatever it spends the steps on. Two
     # budgets because a fast loop going nowhere and one slow call are different
     # failures. Hitting either asks the model to answer from what it has.

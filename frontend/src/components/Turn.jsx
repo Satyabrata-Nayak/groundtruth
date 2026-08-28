@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { api } from '../api'
 import { useAnalysis } from '../useAnalysis'
-import BarChart from './BarChart'
+import Chart from './Chart'
 import DataTable from './DataTable'
 import LiveStatus from './LiveStatus'
 import Steps from './Steps'
@@ -62,7 +62,7 @@ export default function Turn({ turn, onStatusChange }) {
               </Callout>
             ))}
 
-            {result.chart && <BarChart chart={result.chart} />}
+            {result.chart && <Chart chart={result.chart} />}
             <DataTable table={result.table} />
             <Steps steps={result.steps} engine={result.engine} />
           </>

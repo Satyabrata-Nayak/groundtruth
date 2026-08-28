@@ -444,3 +444,86 @@ compute and never computes anything. Every number a user sees came out of DuckDB
 
 `engine` is stored with every result, so a row written by either stays interpretable
 next to the other forever. The contract is pinned by a test that fails if either drifts.
+
+---
+
+## The agent loop, after the performance work
+
+The shape changed for one measured reason: **a model turn is a thousand tool calls.**
+
+```
+  one tool call            30-70 milliseconds
+  one turn of the model    45-90 seconds
+```
+
+So the loop spends turns like money and tool calls like nothing.
+
+```
+  STEP 0   deterministic, before a single token                        ~40 ms
+     inspect_schema  +  SELECT * LIMIT 3   ──►  into the system prompt
+           │
+           ▼
+  PLANNING  (tools attached, at most AGENT_MAX_TOOL_ROUNDS = 2)
+     ┌──────────────────────────────────────────────────────────┐
+     │  model turn, 45-90 s                                     │
+     │     may name up to 4 tools AT ONCE ──► all run first     │
+     │                                        (~40 ms each)     │
+     └──────────────────────────────────────────────────────────┘
+           │
+           ├─ something succeeded ──────────────► leave immediately
+           └─ everything failed ────────────────► one repair round
+           │
+           ▼
+  ANSWER   (NO TOOLS, and a different, much shorter system prompt)
+     ┌──────────────────────────────────────────────────────────┐
+     │  model turn                                              │
+     │     tools attached:  41.8 s  7,972 chars of thinking     │
+     │     tools omitted:    9.0 s  1,547 chars of thinking     │
+     └──────────────────────────────────────────────────────────┘
+           │
+           ▼
+  PRESENTATION   deterministic again
+     evidence table   ◄── last successful tabular result
+     chart TYPE       ◄── inferred from the result's shape, or none
+     verification     ◄── every figure traced to a computed number
+```
+
+**The planning phase never runs again just to let the model say "I am done".** That
+turn used to be a full model call with the tools attached — the slowest in the run — to
+discover something the code can see for itself: a tool succeeded, so there is something
+to answer from.
+
+### Where the time goes, measured
+
+```
+  ctx=16384   29.6 tok/s   17% on CPU     <- what we shipped, silently
+  ctx=8192    61.4 tok/s   100% GPU       <- now
+  ctx=4096    61.3 tok/s   100% GPU
+
+  think: true    43.6 s planning   48.8 s answering
+  think: false   42.1 s planning   49.6 s answering   <- saves NOTHING, and the
+                                                         reasoning leaks into the answer
+```
+
+qwen3:4b emits ~2,500 output tokens per turn whatever the prompt says. At 61 tok/s that
+is ~40 s a turn and ~90 s for an answer — the floor for this model on this GPU. The only
+lever below it is a non-reasoning model, which is an accuracy trade rather than a
+prompting one.
+
+### Chart selection
+
+```
+  result shape                     chart        why
+  ───────────────────────────────  ───────────  ─────────────────────────────────
+  labels + one value               bar          a ranking
+  a date/month column              line         a trend, checked FIRST because
+                                                `Month` is also numeric
+  <= 8 positive shares             pie          parts of one whole
+  two numeric columns, 12+ rows    scatter      a relationship
+  one numeric column, 12+ rows     histogram    a distribution
+  a single row                     none         nothing to compare
+```
+
+Decided in `app/agent/charts.py` from the columns, their types and the row count — all
+of which are known by then. Asking the model would cost a turn to pick a word from a
+list of five, and it would happily pick `pie` for four hundred rows.

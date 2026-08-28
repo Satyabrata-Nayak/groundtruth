@@ -8,18 +8,23 @@ import { completedPhases, currentPhase } from '../phases'
 const GLYPHS = ['✳', '✻', '✼', '✽']
 
 // The point at which a person stops waiting and starts wondering whether it is broken.
-// Measured against the real thing: the schema fetch and the first model turn together
-// run 40-70 seconds, so 45 lands inside the first silence rather than after it.
-const REASSURE_AFTER_S = 45
+// Measured against the real thing: the planning turn alone runs 45-90 seconds, so 30
+// lands inside the first silence rather than after it.
+const REASSURE_AFTER_S = 30
 
-// What the user watches for two minutes.
+// What the user watches while the model works.
 //
 // Everything here answers one question: "is anything actually happening?" The activity
-// is named, the elapsed time moves every second, the step counter shows progress
-// through a bounded budget, and finished work stays on screen with ticks. After
-// forty-five seconds it also says, in words, that this is normal — because the honest
-// answer to "why is this slow" is "it is a language model on your laptop", and a user
-// told that waits happily while a user left guessing reloads the page.
+// is named, the elapsed time moves every second, and finished work stays on screen with
+// ticks and the time it took. After thirty seconds it also says, in words, that this is
+// normal — because the honest answer to "why is this slow" is "it is a language model
+// on your laptop", and a user told that waits happily while a user left guessing
+// reloads the page.
+//
+// There is deliberately no "step N of 6" any more. It came from the newest MODEL_CALL,
+// which is written when a call FINISHES, so it displayed the step that had just ended
+// and sat on "step 1 of 6" for the whole of step 2. A counter that is always one behind
+// is worse than no counter.
 export default function LiveStatus({ events, elapsed }) {
   const [frame, setFrame] = useState(0)
 
@@ -50,10 +55,7 @@ export default function LiveStatus({ events, elapsed }) {
           {GLYPHS[frame % GLYPHS.length]}
         </span>
         <span>{phase.label}</span>
-        <span className="live-elapsed">
-          · {formatDuration(elapsed)}
-          {phase.step && phase.maxSteps ? ` · step ${phase.step} of ${phase.maxSteps}` : ''}
-        </span>
+        <span className="live-elapsed">· {formatDuration(elapsed)}</span>
       </div>
 
       {elapsed >= REASSURE_AFTER_S && (

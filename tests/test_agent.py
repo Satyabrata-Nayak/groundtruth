@@ -196,17 +196,35 @@ def test_the_evidence_table_comes_from_the_tool_result_not_the_model(run):
     assert {row[0] for row in result["table"]["rows"]} == {"North", "East", "West"}
 
 
-def test_a_ranking_of_several_groups_gets_a_chart(run):
+def test_the_chart_type_is_chosen_from_the_shape_of_the_result(run):
+    """Three groups with a share of the total are parts of a whole, so they are drawn as
+    one. The type is inferred, not asked of the model: asking would cost a model turn,
+    and the shape is fully known here."""
     result, _, _ = run(
         [
             calls("compare_groups", group_column="region", metric_column="revenue"),
-            says("West."),
+            says("North."),
         ]
     )
     chart = result["chart"]["chart"]
-    assert chart["type"] == "bar"
+    assert chart["type"] == "pie"
     assert len(chart["data"]) == 3
     assert chart["derived_from"] == "the final query result"
+
+
+def test_a_long_ranking_is_drawn_as_bars(run):
+    """A line between category names would draw a trend across things that have no
+    order, which is a lie about the data rather than a busy chart."""
+    result, _, _ = run(
+        [
+            calls(
+                "execute_sql",
+                sql="SELECT category, sum(revenue) AS total FROM dataset GROUP BY category",
+            ),
+            says("Books lead."),
+        ]
+    )
+    assert result["chart"]["chart"]["type"] == "bar"
 
 
 def test_a_single_row_answer_gets_no_chart(run):
@@ -230,8 +248,8 @@ def test_the_model_call_is_recorded_as_an_event_without_its_reasoning(run):
     )
     model_events = [message for kind, message in events if kind == EventKind.MODEL_CALL]
     assert model_events == [
-        "step 1/6: compare_groups (0.0s)",
-        "step 2/6: writing the answer (0.0s)",
+        "planning (round 1): compare_groups (0.0s)",
+        "writing the answer (0.0s)",
     ]
 
 
@@ -255,14 +273,14 @@ def test_a_tool_error_is_handed_back_so_the_model_can_fix_it(run):
     assert [s["ok"] for s in result["steps"]] == [True, False, True]
 
 
-def test_the_same_call_twice_is_refused_rather_than_re_run(run):
-    """Re-running it would produce the identical payload and consume a step. Saying so
-    is what stops a confused loop spinning on one idea until the budget is gone."""
+def test_repeating_a_failed_call_is_refused_rather_than_re_run(run):
+    """A repair round exists so the model can FIX a bad call, not repeat it. Re-running
+    it produces the identical error and burns the round."""
     result, _, model = run(
         [
-            calls("compare_groups", group_column="region", metric_column="revenue"),
-            calls("compare_groups", group_column="region", metric_column="revenue"),
-            says("West."),
+            calls("compare_groups", group_column="reveune", metric_column="revenue"),
+            calls("compare_groups", group_column="reveune", metric_column="revenue"),
+            says("I could not find that column."),
         ]
     )
 
@@ -287,26 +305,6 @@ def test_a_nameless_tool_call_gets_an_instruction_not_a_crash(run):
     tool_messages = [m for turn in model.sent for m in turn if m["role"] == "tool"]
     assert any("had no name" in m["content"] for m in tool_messages)
     assert result["answer"] == "done"
-
-
-def test_only_two_tool_calls_from_one_turn_are_honoured(run):
-    """Qwen3 emits the same call three times in parallel often enough to matter, and
-    running all of them costs seconds and teaches it nothing."""
-    turn = ModelTurn(
-        tool_calls=[
-            ToolCall(
-                "execute_sql", {"sql": "SELECT 1 AS a"}, {"function": {"name": "execute_sql"}}
-            ),
-            ToolCall(
-                "execute_sql", {"sql": "SELECT 2 AS b"}, {"function": {"name": "execute_sql"}}
-            ),
-            ToolCall(
-                "execute_sql", {"sql": "SELECT 3 AS c"}, {"function": {"name": "execute_sql"}}
-            ),
-        ]
-    )
-    result, _, _ = run([turn, says("done")])
-    assert len([s for s in result["steps"] if s["tool"] == "execute_sql"]) == 2
 
 
 # ============================================================== grounding
@@ -369,24 +367,48 @@ def test_an_inline_reasoning_block_is_stripped_from_the_answer(run):
 # ============================================================== budgets
 
 
-def test_running_out_of_steps_still_produces_an_answer(run, monkeypatch):
-    """Hitting the budget is not an error. The tools removed, the model reports what it
-    established — which is more useful than a failure and honest about being partial."""
-    from app.config import get_settings
+def test_the_answer_is_always_written_by_a_call_with_no_tools(run):
+    """The single biggest speed decision in the agent, pinned so it cannot be undone.
 
-    monkeypatch.setattr(get_settings(), "agent_max_steps", 2)
-    result, _, model = run(
+    Measured on an identical conversation: with tools attached the model spends 41.8 s
+    and 7,972 characters of reasoning re-deciding whether to call something else; with
+    them omitted, 9.0 s and 1,547. Asking a model holding tools to stop using them is
+    asking it to resist the strongest signal in its prompt.
+    """
+    _, _, model = run(
         [
-            calls("execute_sql", sql="SELECT region FROM dataset LIMIT 1"),
-            calls("execute_sql", sql="SELECT region FROM dataset LIMIT 2"),
-            says("I only got as far as listing regions."),
+            calls("compare_groups", group_column="region", metric_column="revenue"),
+            says("North leads."),
         ]
     )
+    assert model.tool_specs_seen[0] is not None  # planning gets the tools
+    assert model.tool_specs_seen[-1] is None  # writing never does
 
-    assert result["answer"] == "I only got as far as listing regions."
-    assert result["warnings"] == ["stopped after the 2-step budget was used up"]
-    # The final turn must be offered NO tools: asking a model to stop calling tools
-    # while still handing it tools is asking it to resist its strongest signal.
+
+def test_a_successful_round_ends_the_planning_phase_immediately(run):
+    """Handing the model the tools again just to let it say "I am done" costs a full
+    turn AND makes that turn four times slower. Once there is something to answer from,
+    the tools go away."""
+    _, _, model = run(
+        [
+            calls("compare_groups", group_column="region", metric_column="revenue"),
+            says("North leads."),
+        ]
+    )
+    assert len(model.tool_specs_seen) == 2
+
+
+def test_a_failed_round_earns_a_repair_round(run):
+    """The one case that needs the tools twice: the error names the valid columns."""
+    result, _, model = run(
+        [
+            calls("compare_groups", group_column="reveune", metric_column="revenue"),
+            calls("compare_groups", group_column="region", metric_column="revenue"),
+            says("North leads."),
+        ]
+    )
+    assert [s["ok"] for s in result["steps"]] == [True, False, True]
+    assert model.tool_specs_seen[:2] == [model.tool_specs_seen[0], model.tool_specs_seen[0]]
     assert model.tool_specs_seen[-1] is None
 
 
