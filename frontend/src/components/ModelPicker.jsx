@@ -61,23 +61,36 @@ export default function ModelPicker({ models, value, thinking, onModel, onThinki
         </span>
       </button>
 
-      {/* Shown next to the model rather than inside the menu: it is a property of the
-          current choice, and it only applies to a model that reasons at all. */}
-      {selected.reasons && (
-        <button
-          type="button"
-          className={`toggle ${thinking === false ? '' : 'is-on'}`}
-          onClick={() => onThinking(thinking === false ? null : false)}
-          title={
-            thinking === false
-              ? 'Reasoning off. Measured: this does NOT make it faster, and its scratch work can end up in the answer.'
+      {/* ALWAYS RENDERED, disabled when it cannot apply.
+
+          The first version hid this entirely for a model with no reasoning step, on the
+          reasoning that a control which does nothing should not be offered. That was
+          wrong in the way that matters: selecting Qwen2.5 made the button vanish, the
+          choice persisted to localStorage, and from the outside "the reasoning button
+          is missing" is indistinguishable from "the reasoning button is broken".
+
+          A disabled control that says why is a fact about the model. An absent one is a
+          bug report waiting to be filed. */}
+      <button
+        type="button"
+        className={`toggle ${!selected.reasons ? 'is-na' : thinking === false ? '' : 'is-on'}`}
+        disabled={!selected.reasons}
+        onClick={() => onThinking(thinking === false ? null : false)}
+        title={
+          !selected.reasons
+            ? `${selected.label} has no reasoning step to switch off — it answers directly. `
+              + `Choose Qwen3 4B to control this.`
+            : thinking === false
+              ? 'Reasoning off. Measured: this does NOT make it faster (42.1s vs 43.6s), '
+                + 'and the model’s scratch work can end up inside the answer.'
               : 'Reasoning on. The model works through the question before answering.'
-          }
-        >
-          <span className="toggle-dot" />
-          reasoning {thinking === false ? 'off' : 'on'}
-        </button>
-      )}
+        }
+      >
+        <span className="toggle-track">
+          <span className="toggle-knob" />
+        </span>
+        reasoning {!selected.reasons ? 'n/a' : thinking === false ? 'off' : 'on'}
+      </button>
 
       {open && (
         <div className="picker-menu" role="listbox">

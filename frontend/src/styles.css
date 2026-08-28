@@ -1132,13 +1132,15 @@ pre.sql {
   line-height: 1;
 }
 
-/* The reasoning switch. Its own control rather than a menu row, because it is a
-   property of the model currently chosen and only exists for models that reason. */
+/* The reasoning switch. Drawn as an actual switch — a track and a knob — because the
+   first version was a dot and a word, and a dot and a word reads as a label rather than
+   as something you can press. It is always present: disabled with a reason beats absent,
+   since an absent control cannot be told apart from a broken one. */
 .toggle {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
+  gap: 7px;
+  padding: 4px 9px 4px 7px;
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--surface);
@@ -1146,25 +1148,47 @@ pre.sql {
   font-size: 12px;
   cursor: pointer;
   flex: none;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
 }
-.toggle:hover {
+.toggle:hover:not(:disabled) {
   border-color: var(--border-strong);
+  color: var(--ink-soft);
 }
 .toggle.is-on {
   color: var(--accent);
   border-color: var(--accent-border);
   background: var(--accent-soft);
 }
-
-.toggle-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
+.toggle.is-na {
   opacity: 0.45;
+  cursor: not-allowed;
 }
-.toggle.is-on .toggle-dot {
-  opacity: 1;
+
+.toggle-track {
+  width: 20px;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--border-strong);
+  position: relative;
+  flex: none;
+  transition: background 0.14s;
+}
+.toggle.is-on .toggle-track {
+  background: var(--accent);
+}
+
+.toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--surface);
+  transition: transform 0.14s ease;
+}
+.toggle.is-on .toggle-knob {
+  transform: translateX(8px);
 }
 
 /* Opens UPWARD: the composer is pinned to the bottom of the viewport, so a menu

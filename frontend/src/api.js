@@ -24,6 +24,20 @@ async function request(path, options = {}) {
   }
 
   if (res.status === 204) return null
+
+  // A JSON API that answers with HTML means the dev server served its SPA fallback,
+  // which means this path is not in vite.config.js's proxy list. Without this check the
+  // symptom is `res.json()` throwing "Unexpected token '<'" inside somebody's .catch(),
+  // and the visible result is a component rendering nothing at all — which is how the
+  // model picker shipped invisible and took a screenshot to notice.
+  const type = res.headers.get('content-type') || ''
+  if (!type.includes('json')) {
+    throw new Error(
+      `${path} returned ${type || 'no content-type'} instead of JSON. ` +
+        `If this is an API route, add it to the proxy list in vite.config.js.`,
+    )
+  }
+
   return res.json()
 }
 

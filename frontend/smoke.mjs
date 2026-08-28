@@ -256,6 +256,10 @@ async function render(phase) {
       ok: true,
       status: options?.method === 'POST' ? 201 : 200,
       statusText: 'OK',
+      // A real Response has headers, and api.js reads content-type to catch an HTML
+      // body served by the dev server's SPA fallback. A stub without them would make
+      // every call throw here while working in the browser.
+      headers: { get: (name) => (name.toLowerCase() === 'content-type' ? 'application/json' : null) },
       json: async () => body,
     }
   }
@@ -449,9 +453,13 @@ for (const [kind, chart] of Object.entries(SHAPES)) {
   expect('no runtime errors with the picker', errors.length === 0, errors.join(' | '))
   expect('the default model is shown on the trigger', root.querySelector('.picker-trigger')?.textContent.includes('Qwen3 4B'))
   expect('its speed is on the trigger too', root.querySelector('.picker-trigger')?.textContent.includes('1-3 min'))
-  // The toggle exists only for a model that actually reasons; showing it for one with
-  // no reasoning step would be a control that does nothing.
-  expect('a reasoning toggle is offered for a reasoning model', Boolean(root.querySelector('.toggle')))
+  // ALWAYS present. Hiding it for a model with no reasoning step made it look broken:
+  // an absent control cannot be told apart from a missing feature.
+  const toggle = root.querySelector('.toggle')
+  expect('a reasoning toggle is always rendered', Boolean(toggle))
+  expect('it is on by default for a reasoning model', toggle?.className.includes('is-on'))
+  expect('it is enabled for a reasoning model', toggle && !toggle.disabled)
+  expect('it looks like a switch, not a label', Boolean(root.querySelector('.toggle-track')))
   expect('the menu is closed until asked for', !root.querySelector('.picker-menu'))
 
   root.querySelector('.picker-trigger').dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true }))
@@ -472,6 +480,59 @@ for (const [kind, chart] of Object.entries(SHAPES)) {
     [...root.querySelectorAll('.picker-option')].some((o) => o.disabled),
   )
   expect('the source of the numbers is named', menu.textContent.includes('eval.runner'))
+}
+
+// ── 5b. selecting a model with no reasoning step ─────────────────────────────
+//
+// THE BUG THIS PINS. The toggle used to be hidden when the chosen model could not
+// reason. Choosing Qwen2.5 made it disappear, the choice persisted in localStorage, and
+// the reasonable conclusion from outside was that the feature had never shipped.
+
+{
+  MODELS[1].available = true
+  const { window, errors } = await render('idle')
+  const root = window.document.getElementById('root')
+
+  root.querySelector('.picker-trigger').dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
+  await new Promise((r) => setTimeout(r, 40))
+  const options = [...root.querySelectorAll('.picker-option')]
+  options[1].dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
+  await new Promise((r) => setTimeout(r, 60))
+
+  const toggle = root.querySelector('.toggle')
+  expect('choosing another model does not throw', errors.length === 0, errors.join(' | '))
+  expect('the trigger follows the choice', root.querySelector('.picker-trigger').textContent.includes('Qwen2.5 3B'))
+  expect('the toggle is STILL rendered', Boolean(toggle))
+  expect('it is disabled rather than hidden', toggle?.disabled === true)
+  expect('it says the switch does not apply', toggle?.textContent.includes('n/a'))
+  expect('and its title says why', toggle?.title.includes('no reasoning step'))
+}
+
+// ── 6. every API path the client calls is proxied by the dev server ──────────
+//
+// A STATIC check, needing no running server, because the dynamic one is a trap: a path
+// missing from the proxy does not 404. Vite serves index.html with a 200, so a curl
+// that checks the status code passes while the app silently breaks. This is the check
+// that would have caught the model picker shipping invisible.
+
+{
+  const apiSource = readFileSync(new URL('./src/api.js', import.meta.url), 'utf8')
+  const viteSource = readFileSync(new URL('./vite.config.js', import.meta.url), 'utf8')
+
+  const called = new Set(
+    [...apiSource.matchAll(/request\(\s*[`'"]\/([a-z0-9_-]+)/gi)].map((m) => `/${m[1]}`),
+  )
+  const proxied = new Set(
+    [...viteSource.matchAll(/'(\/[a-z0-9_-]+)':\s*'http/gi)].map((m) => m[1]),
+  )
+  const missing = [...called].filter((path) => !proxied.has(path))
+
+  expect('the client calls at least the paths we know about', called.size >= 4, [...called].join(' '))
+  expect(
+    'every path the client calls is in the vite proxy',
+    missing.length === 0,
+    missing.length ? `missing from vite.config.js: ${missing.join(', ')}` : '',
+  )
 }
 
 // ── report ───────────────────────────────────────────────────────────────────
