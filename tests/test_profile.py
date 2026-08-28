@@ -59,7 +59,12 @@ def test_column_order_is_preserved(profiled):
     """Position must match the file. The UI and the agent both present columns in
     file order, and a reordered profile silently mislabels everything."""
     assert [c.name for c in profiled.columns] == [
-        "order_id", "order_date", "region", "revenue", "flag", "note",
+        "order_id",
+        "order_date",
+        "region",
+        "revenue",
+        "flag",
+        "note",
     ]
     assert [c.position for c in profiled.columns] == [0, 1, 2, 3, 4, 5]
 
@@ -72,11 +77,17 @@ def test_column_order_is_preserved(profiled):
 @pytest.mark.parametrize(
     ("duckdb_type", "expected"),
     [
-        ("BIGINT", "numeric"), ("INTEGER", "numeric"), ("DOUBLE", "numeric"),
-        ("DECIMAL(10,2)", "numeric"), ("FLOAT", "numeric"),
-        ("DATE", "temporal"), ("TIMESTAMP", "temporal"), ("TIMESTAMP WITH TIME ZONE", "temporal"),
+        ("BIGINT", "numeric"),
+        ("INTEGER", "numeric"),
+        ("DOUBLE", "numeric"),
+        ("DECIMAL(10,2)", "numeric"),
+        ("FLOAT", "numeric"),
+        ("DATE", "temporal"),
+        ("TIMESTAMP", "temporal"),
+        ("TIMESTAMP WITH TIME ZONE", "temporal"),
         ("BOOLEAN", "boolean"),
-        ("VARCHAR", "categorical"), ("BLOB", "categorical"),
+        ("VARCHAR", "categorical"),
+        ("BLOB", "categorical"),
     ],
 )
 def test_type_classification(duckdb_type, expected):
@@ -122,7 +133,7 @@ def test_text_column_has_no_numeric_stats(profiled):
 
 
 def test_distinct_counts(profiled):
-    assert col(profiled, "region").distinct_count == 2      # North, South
+    assert col(profiled, "region").distinct_count == 2  # North, South
     assert col(profiled, "flag").distinct_count == 1
     assert col(profiled, "order_id").distinct_count == 4
 
@@ -183,9 +194,7 @@ def test_awkward_column_names_are_handled(data_root, tmp_path):
     non-ASCII all have to survive being interpolated into the profiling queries."""
     csv = tmp_path / "awkward.csv"
     csv.write_text(
-        'normal,"has space","has""quote",select,café\n'
-        "1,2,3,4,5\n"
-        "6,7,8,9,10\n",
+        'normal,"has space","has""quote",select,café\n1,2,3,4,5\n6,7,8,9,10\n',
         encoding="utf-8",
     )
     profile = profile_parquet(ingest.ingest_file(csv).parquet_path)
@@ -227,5 +236,5 @@ def test_distinct_count_excludes_nulls(data_root, tmp_path):
     profile = profile_parquet(ingest.ingest_file(csv).parquet_path)
 
     column = col(profile, "a")
-    assert column.distinct_count == 2   # x, y — not 3
+    assert column.distinct_count == 2  # x, y — not 3
     assert column.null_count == 1

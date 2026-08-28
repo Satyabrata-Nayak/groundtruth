@@ -41,8 +41,8 @@ HOSTILE_IDS = [
     "",
     ".",
     "..",
-    "con",       # reserved device name on Windows
-    "a\x00b",    # NUL byte
+    "con",  # reserved device name on Windows
+    "a\x00b",  # NUL byte
 ]
 
 

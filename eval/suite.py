@@ -24,22 +24,22 @@ QUESTIONS_DIR = Path(__file__).parent / "questions"
 
 CATEGORIES = frozenset(
     {
-        "lookup",        # one fact, one query -- a harness canary, not a model test
-        "aggregation",   # group and rank
-        "comparison",    # two or more things weighed against each other
-        "trend",         # behaviour over time
-        "diagnosis",     # multi-step "why did this happen"
+        "lookup",  # one fact, one query -- a harness canary, not a model test
+        "aggregation",  # group and rank
+        "comparison",  # two or more things weighed against each other
+        "trend",  # behaviour over time
+        "diagnosis",  # multi-step "why did this happen"
         "data_quality",  # nulls, constants, duplicated and disagreeing columns
-        "ambiguity",     # no single right number; graded on stating the assumption
+        "ambiguity",  # no single right number; graded on stating the assumption
     }
 )
 
 ANSWER_KINDS = frozenset(
     {
-        "scalar",             # one number, compared within a relative tolerance
-        "label",              # one name that must appear in the answer
-        "ranking",            # the first top_k labels, in the right order
-        "facts",              # several named values, each of which must appear
+        "scalar",  # one number, compared within a relative tolerance
+        "label",  # one name that must appear in the answer
+        "ranking",  # the first top_k labels, in the right order
+        "facts",  # several named values, each of which must appear
         "assumption_stated",  # graded only on whether the answer says what it assumed
     }
 )
@@ -140,9 +140,7 @@ def _parse(path: Path, dataset: str, index: int, entry: dict[str, Any]) -> Quest
 
     category = entry.get("category")
     if category not in CATEGORIES:
-        raise QuestionSetError(
-            f"{where}: category {category!r} is not one of {sorted(CATEGORIES)}"
-        )
+        raise QuestionSetError(f"{where}: category {category!r} is not one of {sorted(CATEGORIES)}")
 
     difficulty = entry.get("difficulty", "medium")
     if difficulty not in DIFFICULTIES:

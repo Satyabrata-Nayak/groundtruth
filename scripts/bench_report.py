@@ -54,8 +54,9 @@ def main() -> int:
         return 1
 
     runs = [json.loads(f.read_text(encoding="utf-8")) for f in files]
-    headers = [f"{r['model']}{'' if r.get('reasoning') == 'default' else ' --no-think'}"
-               for r in runs]
+    headers = [
+        f"{r['model']}{'' if r.get('reasoning') == 'default' else ' --no-think'}" for r in runs
+    ]
 
     width = max(len(label) for label, _, _ in ROWS)
     print(f"| {'Metric'.ljust(width)} | " + " | ".join(headers) + " |")
@@ -66,8 +67,11 @@ def main() -> int:
         for r in runs:
             v = dig(r, path)
             cells.append("—" if v is None else fmt.format(v))
-        print(f"| {label.ljust(width)} | " + " | ".join(
-            c.ljust(len(h)) for c, h in zip(cells, headers, strict=True)) + " |")
+        print(
+            f"| {label.ljust(width)} | "
+            + " | ".join(c.ljust(len(h)) for c, h in zip(cells, headers, strict=True))
+            + " |"
+        )
 
     print("\nFailure samples (first 3 per section):")
     for r, h in zip(runs, headers, strict=True):

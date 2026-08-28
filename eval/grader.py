@@ -60,9 +60,13 @@ _NUMBER = re.compile(
 )
 
 _MAGNITUDES = {
-    "k": 1e3, "thousand": 1e3,
-    "m": 1e6, "million": 1e6,
-    "b": 1e9, "bn": 1e9, "billion": 1e9,
+    "k": 1e3,
+    "thousand": 1e3,
+    "m": 1e6,
+    "million": 1e6,
+    "b": 1e9,
+    "bn": 1e9,
+    "billion": 1e9,
 }
 
 # Default relative tolerance when a question does not set one. Tight enough that a
@@ -73,8 +77,15 @@ DEFAULT_TOLERANCE = 0.01
 # picking one. Deliberately broad -- the requirement is that a choice was made
 # visible, not that it was announced with any particular formula.
 _ASSUMPTION_MARKERS = (
-    "assum", "i used", "using the", "interpret", "based on the",
-    "taking ", "defined as", "calculated from", "i have taken",
+    "assum",
+    "i used",
+    "using the",
+    "interpret",
+    "based on the",
+    "taking ",
+    "defined as",
+    "calculated from",
+    "i have taken",
 )
 
 
@@ -269,9 +280,7 @@ def _grade_label(expected: ExpectedAnswer, text: str, result: Grade) -> bool:
     return False
 
 
-def _grade_ranking(
-    question: Question, expected: ExpectedAnswer, text: str, result: Grade
-) -> bool:
+def _grade_ranking(question: Question, expected: ExpectedAnswer, text: str, result: Grade) -> bool:
     """The first top_k labels must appear, in the right relative order.
 
     Position is checked by where each label first occurs in the text. An answer that

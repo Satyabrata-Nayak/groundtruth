@@ -179,8 +179,7 @@ class CompareGroupsTool(Tool):
 
         best = groups[0]
         return data, (
-            f"{len(groups)} group(s) by {group.name}; "
-            f"top: {best['group']} = {best['value']}"
+            f"{len(groups)} group(s) by {group.name}; top: {best['group']} = {best['value']}"
         )
 
 
@@ -204,7 +203,7 @@ def _reject_unusable_grouping(context: ToolContext, group: ColumnRef) -> None:
     """
     counted = run_sql(
         context,
-        f"SELECT count(DISTINCT {group.quoted}), count(*) FROM \"{TABLE_NAME}\"",
+        f'SELECT count(DISTINCT {group.quoted}), count(*) FROM "{TABLE_NAME}"',
         max_rows=1,
     )
     distinct, rows = (int(counted.rows[0][0]), int(counted.rows[0][1])) if counted.rows else (0, 0)
@@ -262,8 +261,7 @@ class CorrelationTool(Tool):
         # Rows where either value is null are excluded from both coefficients, so the
         # two are computed over the same population and `n` describes both.
         both_present = (
-            f'FROM "{TABLE_NAME}" '
-            f"WHERE {first.quoted} IS NOT NULL AND {second.quoted} IS NOT NULL"
+            f'FROM "{TABLE_NAME}" WHERE {first.quoted} IS NOT NULL AND {second.quoted} IS NOT NULL'
         )
         sql = (
             f"WITH paired AS (SELECT {first.quoted} AS a, {second.quoted} AS b {both_present}), "

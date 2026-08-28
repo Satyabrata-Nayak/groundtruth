@@ -153,9 +153,7 @@ def build(destination: Path, seed: int) -> int:
 
             units = rng.randint(1, 5)
             unit_price = round(
-                prices[category]
-                * SEGMENT_VALUE_MULTIPLIER[segment]
-                * rng.uniform(0.8, 1.25),
+                prices[category] * SEGMENT_VALUE_MULTIPLIER[segment] * rng.uniform(0.8, 1.25),
                 2,
             )
 
@@ -178,9 +176,7 @@ def build(destination: Path, seed: int) -> int:
             )
             cost = round(gross * (1 - max(0.02, margin)), 2)
 
-            shipping = "" if rng.random() < SHIPPING_NULL_RATE else round(
-                rng.uniform(3.5, 24.0), 2
-            )
+            shipping = "" if rng.random() < SHIPPING_NULL_RATE else round(rng.uniform(3.5, 24.0), 2)
             returned = rng.random() < RETURN_RATE[category]
 
             writer.writerow(

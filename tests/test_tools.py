@@ -62,8 +62,14 @@ def test_inspect_schema_lists_every_column(registry, context):
     assert result.ok
     names = [c["name"] for c in result.data["columns"]]
     assert names == [
-        "order_id", "order_date", "region", "category",
-        "revenue", "cost", "units", "note",
+        "order_id",
+        "order_date",
+        "region",
+        "category",
+        "revenue",
+        "cost",
+        "units",
+        "note",
     ]
     assert result.data["row_count"] == 8
 
@@ -135,9 +141,7 @@ def test_execute_sql_rejects_non_select(registry, context):
 
 
 def test_execute_sql_rejects_reading_other_files(registry, context):
-    result = call(
-        registry, "execute_sql", context, sql="SELECT * FROM read_csv('/etc/passwd')"
-    )
+    result = call(registry, "execute_sql", context, sql="SELECT * FROM read_csv('/etc/passwd')")
     assert not result.ok
     assert "table functions are not permitted" in result.error
 
@@ -222,8 +226,11 @@ def test_compare_groups_allows_unique_grouping_in_a_tiny_table(registry, context
 def test_compare_groups_rejects_identifier_grouping(registry, wide_context):
     """With enough rows, a column that is unique per row aggregates nothing."""
     result = call(
-        registry, "compare_groups", context=wide_context,
-        group_column="row_id", metric_column="value",
+        registry,
+        "compare_groups",
+        context=wide_context,
+        group_column="row_id",
+        metric_column="value",
     )
     assert not result.ok
     assert "one group per row" in result.error
@@ -233,8 +240,11 @@ def test_compare_groups_rejects_identifier_grouping(registry, wide_context):
 def test_compare_groups_accepts_a_real_category_in_the_same_table(registry, wide_context):
     """The rejection above must be about uniqueness, not about the table being large."""
     result = call(
-        registry, "compare_groups", context=wide_context,
-        group_column="bucket", metric_column="value",
+        registry,
+        "compare_groups",
+        context=wide_context,
+        group_column="bucket",
+        metric_column="value",
     )
     assert result.ok
     assert len(result.data["groups"]) == 3
@@ -286,14 +296,12 @@ def test_histogram_covers_every_bucket(registry, context):
     result = call(registry, "create_chart", context, chart_type="histogram", x="revenue", bins=4)
     assert result.ok
     data = result.data["chart"]["data"]
-    assert len(data) == 4                       # empty buckets still appear
+    assert len(data) == 4  # empty buckets still appear
     assert sum(point["count"] for point in data) == 8
 
 
 def test_histogram_refuses_a_y_column(registry, context):
-    result = call(
-        registry, "create_chart", context, chart_type="histogram", x="revenue", y="cost"
-    )
+    result = call(registry, "create_chart", context, chart_type="histogram", x="revenue", y="cost")
     assert not result.ok
     assert "does not use a 'y' column" in result.error
 

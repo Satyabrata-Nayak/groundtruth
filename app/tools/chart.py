@@ -171,9 +171,7 @@ class CreateChartTool(Tool):
         kind = _KINDS[chart_type]
         columns = dataset_columns(context)
 
-        x_ref = resolve_column(
-            context, x, argument="x", require=kind.x_kinds, columns=columns
-        )
+        x_ref = resolve_column(context, x, argument="x", require=kind.x_kinds, columns=columns)
         y_ref: ColumnRef | None = None
 
         if kind.needs_y:
@@ -182,9 +180,7 @@ class CreateChartTool(Tool):
                     f"a {chart_type} chart needs a 'y' column. 'x' should be "
                     f"{kind.x_role}, and 'y' the numeric value to plot."
                 )
-            y_ref = resolve_column(
-                context, y, argument="y", require=kind.y_kinds, columns=columns
-            )
+            y_ref = resolve_column(context, y, argument="y", require=kind.y_kinds, columns=columns)
         elif y is not None:
             raise ToolError(
                 f"a {chart_type} chart does not use a 'y' column; it shows the "

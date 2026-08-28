@@ -167,9 +167,7 @@ def test_error_messages_do_not_leak_server_paths(data_root, tmp_path):
 def test_quoted_newlines_and_commas(data_root, tmp_path):
     messy = tmp_path / "messy.csv"
     messy.write_text(
-        'id,note,amount\n'
-        '1,"a note, with a comma",10\n'
-        '2,"a note\nspanning lines",20\n',
+        'id,note,amount\n1,"a note, with a comma",10\n2,"a note\nspanning lines",20\n',
         encoding="utf-8",
     )
     result = ingest.ingest_file(messy)

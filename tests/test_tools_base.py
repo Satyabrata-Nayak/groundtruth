@@ -203,9 +203,9 @@ def test_failed_payload_carries_no_partial_data(registry, context):
 
 def test_model_view_trims_what_the_model_sees(registry, context):
     result = registry.call("big", context, {})
-    assert len(result.data["points"]) == 1000        # the caller gets everything
+    assert len(result.data["points"]) == 1000  # the caller gets everything
     payload = result.to_model_payload()
-    assert len(payload["points"]) == 3               # the model gets a sample
+    assert len(payload["points"]) == 3  # the model gets a sample
     assert payload["truncated"] is True
     assert payload["keep"] == "yes"
 

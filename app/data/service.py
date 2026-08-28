@@ -66,9 +66,7 @@ def create_dataset(
     Passing `dataset_id` adds a version to an existing dataset; omitting it creates a
     new one. Either the whole operation succeeds or nothing is left behind.
     """
-    result = ingest.ingest_file(
-        source, dataset_id=dataset_id, original_filename=original_filename
-    )
+    result = ingest.ingest_file(source, dataset_id=dataset_id, original_filename=original_filename)
 
     try:
         profile = profile_parquet(result.parquet_path)

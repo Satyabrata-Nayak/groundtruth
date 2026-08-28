@@ -112,21 +112,42 @@ SQL_TASKS: list[tuple[str, str, str]] = [
     ("total_revenue", "What is the total revenue?", "SELECT SUM(revenue) FROM sales"),
     ("avg_revenue", "What is the average revenue per order?", "SELECT AVG(revenue) FROM sales"),
     ("order_count", "How many orders are there?", "SELECT COUNT(*) FROM sales"),
-    ("filter_region", "What is the total revenue from the North region?",
-     "SELECT SUM(revenue) FROM sales WHERE region = 'North'"),
-    ("filter_count", "How many orders were in the Electronics category?",
-     "SELECT COUNT(*) FROM sales WHERE category = 'Electronics'"),
-    ("group_max", "Which category has the highest total revenue? Return only its total revenue.",
-     "SELECT SUM(revenue) AS t FROM sales GROUP BY category ORDER BY t DESC LIMIT 1"),
-    ("derived_profit", "What is the total profit, where profit is revenue minus cost?",
-     "SELECT SUM(revenue - cost) FROM sales"),
-    ("group_filter", "What is the total profit for the North region?",
-     "SELECT SUM(revenue - cost) FROM sales WHERE region = 'North'"),
-    ("time_group", "What was the total revenue in March 2024?",
-     "SELECT SUM(revenue) FROM sales "
-     "WHERE order_date >= '2024-03-01' AND order_date < '2024-04-01'"),
-    ("ratio", "What is the overall profit margin as a fraction (total profit / total revenue)?",
-     "SELECT SUM(revenue - cost) / SUM(revenue) FROM sales"),
+    (
+        "filter_region",
+        "What is the total revenue from the North region?",
+        "SELECT SUM(revenue) FROM sales WHERE region = 'North'",
+    ),
+    (
+        "filter_count",
+        "How many orders were in the Electronics category?",
+        "SELECT COUNT(*) FROM sales WHERE category = 'Electronics'",
+    ),
+    (
+        "group_max",
+        "Which category has the highest total revenue? Return only its total revenue.",
+        "SELECT SUM(revenue) AS t FROM sales GROUP BY category ORDER BY t DESC LIMIT 1",
+    ),
+    (
+        "derived_profit",
+        "What is the total profit, where profit is revenue minus cost?",
+        "SELECT SUM(revenue - cost) FROM sales",
+    ),
+    (
+        "group_filter",
+        "What is the total profit for the North region?",
+        "SELECT SUM(revenue - cost) FROM sales WHERE region = 'North'",
+    ),
+    (
+        "time_group",
+        "What was the total revenue in March 2024?",
+        "SELECT SUM(revenue) FROM sales "
+        "WHERE order_date >= '2024-03-01' AND order_date < '2024-04-01'",
+    ),
+    (
+        "ratio",
+        "What is the overall profit margin as a fraction (total profit / total revenue)?",
+        "SELECT SUM(revenue - cost) / SUM(revenue) FROM sales",
+    ),
 ]
 
 
@@ -158,7 +179,7 @@ TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "inspect_schema",
             "description": "Return column names, types and row count for the dataset. "
-                           "Use this first when the dataset structure is unknown.",
+            "Use this first when the dataset structure is unknown.",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -167,7 +188,7 @@ TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "profile_column",
             "description": "Return detailed statistics for one column: nulls, distinct "
-                           "count, min, max, mean, stddev.",
+            "count, min, max, mean, stddev.",
             "parameters": {
                 "type": "object",
                 "properties": {"column": {"type": "string"}},
@@ -204,19 +225,34 @@ TOOL_TASKS: list[tuple[str, str, set[str], set[str]]] = [
     ("sql_sum", "What is the total revenue?", {"execute_sql"}, {"query"}),
     ("sql_filter", "How much revenue came from the North region?", {"execute_sql"}, {"query"}),
     ("sql_group", "Which category is most profitable?", {"execute_sql"}, {"query"}),
-    ("profile_1", "Give me detailed statistics about the revenue column.",
-     {"profile_column"}, {"column"}),
-    ("profile_2", "Are there any missing values in the cost column?",
-     {"profile_column", "execute_sql"}, set()),
-    ("chart_bar", "Draw a bar chart of revenue by region.",
-     {"create_chart", "execute_sql"}, set()),
-    ("chart_line", "Show me a line chart of revenue over time.",
-     {"create_chart", "execute_sql"}, set()),
+    (
+        "profile_1",
+        "Give me detailed statistics about the revenue column.",
+        {"profile_column"},
+        {"column"},
+    ),
+    (
+        "profile_2",
+        "Are there any missing values in the cost column?",
+        {"profile_column", "execute_sql"},
+        set(),
+    ),
+    ("chart_bar", "Draw a bar chart of revenue by region.", {"create_chart", "execute_sql"}, set()),
+    (
+        "chart_line",
+        "Show me a line chart of revenue over time.",
+        {"create_chart", "execute_sql"},
+        set(),
+    ),
     ("sql_count", "How many orders are in the Electronics category?", {"execute_sql"}, {"query"}),
     ("sql_avg", "What is the average order value?", {"execute_sql"}, {"query"}),
     ("sql_time", "How did revenue change month by month?", {"execute_sql"}, {"query"}),
-    ("profile_3", "What is the distribution of the category column?",
-     {"profile_column", "execute_sql"}, set()),
+    (
+        "profile_3",
+        "What is the distribution of the category column?",
+        {"profile_column", "execute_sql"},
+        set(),
+    ),
     ("sql_margin", "What is the profit margin per category?", {"execute_sql"}, {"query"}),
     ("chart_hist", "Plot a histogram of revenue.", {"create_chart", "execute_sql"}, set()),
 ]
@@ -512,7 +548,8 @@ def strip_sql(text: str) -> tuple[str, bool]:
         stmt = seg[with_match.start() :]
     else:
         candidates = [
-            m for m in re.finditer(r"\bSELECT\b", seg, re.IGNORECASE)
+            m
+            for m in re.finditer(r"\bSELECT\b", seg, re.IGNORECASE)
             if re.search(r"\bFROM\b", seg[m.start() :], re.IGNORECASE)
         ]
         if not candidates:
@@ -567,21 +604,29 @@ def grade_sql(
 def section_latency(client: httpx.Client, model: str) -> dict[str, Any]:
     log("\n[A] Latency")
     # Cold load: unload the model first so load_duration reflects a real cold start.
-    client.post(f"{OLLAMA}/api/chat",
-                json={"model": model, "messages": [], "keep_alive": 0}, timeout=TIMEOUT)
+    client.post(
+        f"{OLLAMA}/api/chat",
+        json={"model": model, "messages": [], "keep_alive": 0},
+        timeout=TIMEOUT,
+    )
     time.sleep(2)
 
     cold = chat(client, model, [{"role": "user", "content": "Say OK."}])
     log(f"    cold load          : {cold.load_s:6.2f} s")
 
     anys, contents, rates, walls, think_ratio = [], [], [], [], []
-    log("      ttft_any = true first token | ttft_ans = first ANSWER token "
-        "(after the <think> block)")
-    for i, prompt in enumerate((
-        "Explain what a database index is, in about 80 words.",
-        "List five common data quality problems in CSV files.",
-        "Describe the difference between a LEFT JOIN and an INNER JOIN in 80 words.",
-    ), 1):
+    log(
+        "      ttft_any = true first token | ttft_ans = first ANSWER token "
+        "(after the <think> block)"
+    )
+    for i, prompt in enumerate(
+        (
+            "Explain what a database index is, in about 80 words.",
+            "List five common data quality problems in CSV files.",
+            "Describe the difference between a LEFT JOIN and an INNER JOIN in 80 words.",
+        ),
+        1,
+    ):
         log(f"      {i}/3 streaming...")
         t_any, t_content, _ = measure_ttft(client, model, prompt)
         res = chat(client, model, [{"role": "user", "content": prompt}])
@@ -597,9 +642,11 @@ def section_latency(client: httpx.Client, model: str) -> dict[str, Any]:
         rates.append(res.tokens_per_sec)
         walls.append(res.wall_s)
         think_ratio.append(ratio)
-        log(f"      ttft_any {t_any:5.2f}s | ttft_ans {t_content:6.2f}s | "
+        log(
+            f"      ttft_any {t_any:5.2f}s | ttft_ans {t_content:6.2f}s | "
             f"{res.tokens_per_sec:5.1f} tok/s | {res.eval_tokens:4d} tok | "
-            f"wall {res.wall_s:5.1f}s | thinking {100 * ratio:3.0f}% of output")
+            f"wall {res.wall_s:5.1f}s | thinking {100 * ratio:3.0f}% of output"
+        )
 
     return {
         "cold_load_s": round(cold.load_s, 2),
@@ -632,8 +679,7 @@ def section_structured(client: httpx.Client, model: str) -> dict[str, Any]:
         "You are an analysis planner. Given a question about a sales dataset, respond "
         "with a JSON object describing how to answer it.\n\n"
         "Respond with JSON only - no prose, no markdown fences. The object must match "
-        "this schema exactly:\n"
-        + json.dumps(PLAN_SCHEMA, indent=2)
+        "this schema exactly:\n" + json.dumps(PLAN_SCHEMA, indent=2)
     )
     out: dict[str, Any] = {}
 
@@ -643,9 +689,15 @@ def section_structured(client: httpx.Client, model: str) -> dict[str, Any]:
         for i, (label, question) in enumerate(JSON_TASKS, 1):
             log(f"      {arm:11s} {i:2d}/{len(JSON_TASKS)}  {label}")
             res = chat(
-                client, model,
-                [{"role": "system", "content": system},
-                 {"role": "user", "content": f"Schema:\n{SCHEMA_PROMPT}\n\nQuestion: {question}"}],
+                client,
+                model,
+                [
+                    {"role": "system", "content": system},
+                    {
+                        "role": "user",
+                        "content": f"Schema:\n{SCHEMA_PROMPT}\n\nQuestion: {question}",
+                    },
+                ],
                 fmt=fmt,
             )
             if res.error:
@@ -660,8 +712,12 @@ def section_structured(client: httpx.Client, model: str) -> dict[str, Any]:
         log(f"    {arm:12s}: {ok}/{len(JSON_TASKS)} valid ({pct:.0f}%)")
         for f in failures[:3]:
             log(f"        - {f}")
-        out[arm] = {"valid": ok, "total": len(JSON_TASKS), "pct": round(pct, 1),
-                    "failures": failures}
+        out[arm] = {
+            "valid": ok,
+            "total": len(JSON_TASKS),
+            "pct": round(pct, 1),
+            "failures": failures,
+        }
     return out
 
 
@@ -677,9 +733,12 @@ def section_tools(client: httpx.Client, model: str) -> dict[str, Any]:
 
     for i, (label, prompt, allowed, required_args) in enumerate(TOOL_TASKS, 1):
         log(f"      {i:2d}/{len(TOOL_TASKS)}  {label}")
-        res = chat(client, model,
-                   [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-                   tools=TOOLS)
+        res = chat(
+            client,
+            model,
+            [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+            tools=TOOLS,
+        )
         if res.error or not res.tool_calls:
             failures.append(f"{label}: no tool call")
             continue
@@ -699,13 +758,19 @@ def section_tools(client: httpx.Client, model: str) -> dict[str, Any]:
         args_ok += 1
 
     n = len(TOOL_TASKS)
-    log(f"    emitted a tool call: {emitted}/{n} ({100*emitted/n:.0f}%)")
-    log(f"    chose right tool   : {correct}/{n} ({100*correct/n:.0f}%)")
-    log(f"    args valid too     : {args_ok}/{n} ({100*args_ok/n:.0f}%)")
+    log(f"    emitted a tool call: {emitted}/{n} ({100 * emitted / n:.0f}%)")
+    log(f"    chose right tool   : {correct}/{n} ({100 * correct / n:.0f}%)")
+    log(f"    args valid too     : {args_ok}/{n} ({100 * args_ok / n:.0f}%)")
     for f in failures[:5]:
         log(f"        - {f}")
-    return {"emitted": emitted, "correct_tool": correct, "valid_args": args_ok,
-            "total": n, "pct": round(100 * args_ok / n, 1), "failures": failures}
+    return {
+        "emitted": emitted,
+        "correct_tool": correct,
+        "valid_args": args_ok,
+        "total": n,
+        "pct": round(100 * args_ok / n, 1),
+        "failures": failures,
+    }
 
 
 def section_sql(client: httpx.Client, model: str) -> dict[str, Any]:
@@ -724,10 +789,14 @@ def section_sql(client: httpx.Client, model: str) -> dict[str, Any]:
     for i, (label, question, ref_sql) in enumerate(SQL_TASKS, 1):
         log(f"      {i:2d}/{len(SQL_TASKS)}  {label}")
         expected = float(con.execute(ref_sql).fetchone()[0])
-        res = chat(client, model,
-                   [{"role": "system", "content": system},
-                    {"role": "user",
-                     "content": f"Schema:\n{SCHEMA_PROMPT}\n\nQuestion: {question}"}])
+        res = chat(
+            client,
+            model,
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": f"Schema:\n{SCHEMA_PROMPT}\n\nQuestion: {question}"},
+            ],
+        )
         if res.error:
             failures.append(f"{label}: {res.error[:40]}")
             continue
@@ -738,14 +807,22 @@ def section_sql(client: httpx.Client, model: str) -> dict[str, Any]:
             failures.append(f"{label}: {why}")
 
     n = len(SQL_TASKS)
-    log(f"    correct value      : {ok}/{n} ({100*ok/n:.0f}%)")
-    log(f"    clean output       : {n - salvaged}/{n} "
-        f"(SQL had to be extracted from prose/fences in {salvaged})")
+    log(f"    correct value      : {ok}/{n} ({100 * ok / n:.0f}%)")
+    log(
+        f"    clean output       : {n - salvaged}/{n} "
+        f"(SQL had to be extracted from prose/fences in {salvaged})"
+    )
     for f in failures[:5]:
         log(f"        - {f}")
     con.close()
-    return {"correct": ok, "total": n, "pct": round(100 * ok / n, 1),
-            "clean_output": n - salvaged, "salvaged": salvaged, "failures": failures}
+    return {
+        "correct": ok,
+        "total": n,
+        "pct": round(100 * ok / n, 1),
+        "clean_output": n - salvaged,
+        "salvaged": salvaged,
+        "failures": failures,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -803,8 +880,10 @@ def main() -> int:
     lat, st, tl, sq = (results[k] for k in ("latency", "structured", "tools", "sql"))
     log(f"  tokens/sec (median)     : {lat['tokens_per_sec_median']}")
     log(f"  ttft, any token         : {lat['ttft_any_median_s']} s")
-    log(f"  ttft, answer token      : {lat['ttft_answer_median_s']} s  "
-        f"(thinking = {100 * lat['thinking_share_median']:.0f}% of output)")
+    log(
+        f"  ttft, answer token      : {lat['ttft_answer_median_s']} s  "
+        f"(thinking = {100 * lat['thinking_share_median']:.0f}% of output)"
+    )
     log(f"  wall per call (median)  : {lat['wall_median_s']} s")
     log(f"  cold load               : {lat['cold_load_s']} s")
     log(f"  JSON valid, free-form   : {st['freeform']['pct']}%")

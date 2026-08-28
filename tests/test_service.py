@@ -43,7 +43,8 @@ def test_upload_profile_and_query_end_to_end(db, data_root, sales_csv):
 
     # and the data itself is queryable through the sandbox
     result = sandbox.execute_sql(
-        created.dataset_id, created.version,
+        created.dataset_id,
+        created.version,
         f"SELECT region, SUM(revenue) AS r FROM {sandbox.TABLE_NAME} "
         "GROUP BY region ORDER BY r DESC",
     )
@@ -156,9 +157,7 @@ def test_failed_ingest_writes_nothing_anywhere(db, data_root, tmp_path):
     assert list(data_root.iterdir()) == []
 
 
-def test_parquet_is_removed_if_the_database_write_fails(
-    db, data_root, sales_csv, monkeypatch
-):
+def test_parquet_is_removed_if_the_database_write_fails(db, data_root, sales_csv, monkeypatch):
     """The consistency guarantee that matters.
 
     A Parquet file with no metadata row is invisible to every listing, occupies disk

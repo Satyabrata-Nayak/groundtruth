@@ -71,9 +71,7 @@ def detect_format(filename: str) -> str:
         return "csv"
     if suffix in _PARQUET_SUFFIXES:
         return "parquet"
-    raise IngestError(
-        f"unsupported file type '{suffix or filename}'. Supported: .csv, .parquet"
-    )
+    raise IngestError(f"unsupported file type '{suffix or filename}'. Supported: .csv, .parquet")
 
 
 def validate_source(path: Path, filename: str | None = None) -> tuple[str, int]:
@@ -141,9 +139,9 @@ def _shape(parquet: Path) -> tuple[int, int]:
     """(row_count, column_count) read from Parquet metadata where possible."""
     con = duckdb.connect(":memory:")
     try:
-        rows = con.execute(
-            "SELECT count(*) FROM read_parquet(?)", [parquet.as_posix()]
-        ).fetchone()[0]
+        rows = con.execute("SELECT count(*) FROM read_parquet(?)", [parquet.as_posix()]).fetchone()[
+            0
+        ]
         cols = len(
             con.execute("SELECT * FROM read_parquet(?) LIMIT 0", [parquet.as_posix()]).description
         )

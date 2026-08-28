@@ -87,9 +87,7 @@ class OracleAgent:
 
     name = "oracle"
 
-    def answer(
-        self, question: Question, context: ToolContext, registry: ToolRegistry
-    ) -> AgentRun:
+    def answer(self, question: Question, context: ToolContext, registry: ToolRegistry) -> AgentRun:
         started = time.perf_counter()
         result = registry.call(
             "execute_sql", context, {"sql": question.reference_sql, "max_rows": 50}
@@ -116,9 +114,7 @@ class RefusingAgent:
 
     name = "refusing"
 
-    def answer(
-        self, question: Question, context: ToolContext, registry: ToolRegistry
-    ) -> AgentRun:
+    def answer(self, question: Question, context: ToolContext, registry: ToolRegistry) -> AgentRun:
         return AgentRun(answer="I don't have enough information to answer that.")
 
 
@@ -133,9 +129,7 @@ class SchemaOnlyAgent:
 
     name = "schema-only"
 
-    def answer(
-        self, question: Question, context: ToolContext, registry: ToolRegistry
-    ) -> AgentRun:
+    def answer(self, question: Question, context: ToolContext, registry: ToolRegistry) -> AgentRun:
         started = time.perf_counter()
         result = registry.call("inspect_schema", context, {})
         columns = ", ".join(c["name"] for c in result.data.get("columns", [])) if result.ok else ""

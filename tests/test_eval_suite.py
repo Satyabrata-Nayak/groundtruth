@@ -117,8 +117,7 @@ def test_reference_sql_is_read_only(suite):
 
 def test_every_category_is_represented(suite):
     counts = suite.categories()
-    for category in ("lookup", "aggregation", "comparison", "trend", "diagnosis",
-                     "data_quality"):
+    for category in ("lookup", "aggregation", "comparison", "trend", "diagnosis", "data_quality"):
         assert counts.get(category, 0) > 0, f"no questions in category {category}"
 
 

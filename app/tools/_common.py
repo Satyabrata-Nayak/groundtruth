@@ -153,9 +153,7 @@ def run_sql(context: ToolContext, sql: str, *, max_rows: int) -> sandbox.QueryRe
     would.
     """
     try:
-        return sandbox.execute_sql(
-            context.dataset_id, context.version, sql, max_rows=max_rows
-        )
+        return sandbox.execute_sql(context.dataset_id, context.version, sql, max_rows=max_rows)
     except sandbox.SqlValidationError as exc:
         raise ToolError(f"generated SQL was rejected: {exc}") from exc
     except sandbox.SqlExecutionError as exc:

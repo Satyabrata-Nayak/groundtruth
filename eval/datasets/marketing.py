@@ -103,20 +103,50 @@ NOTES_FILL_RATE = 0.05
 LEGACY_ID_FILL_RATE = 0.40
 
 COLUMNS = (
-    "row_id", "date", "week_number", "campaign_id", "campaign_name", "channel",
-    "ad_group", "variant", "audience_segment", "device", "country", "placement",
-    "creative_id", "creative_format", "bid_strategy",
-    "impressions", "clicks", "ctr",
-    "conversions", "conv", "conversion_rate", "cvr",
-    "spend", "cpc", "cost_per_click", "budget_daily",
-    "revenue", "roas",
-    "sessions", "new_users", "returning_users", "bounce_rate",
-    "avg_session_sec", "pages_per_session",
-    "video_views", "video_completions",
-    "engagement_score", "quality_score",
-    "is_active", "attribution_window",
-    "account_currency", "data_source",
-    "legacy_campaign_id", "notes",
+    "row_id",
+    "date",
+    "week_number",
+    "campaign_id",
+    "campaign_name",
+    "channel",
+    "ad_group",
+    "variant",
+    "audience_segment",
+    "device",
+    "country",
+    "placement",
+    "creative_id",
+    "creative_format",
+    "bid_strategy",
+    "impressions",
+    "clicks",
+    "ctr",
+    "conversions",
+    "conv",
+    "conversion_rate",
+    "cvr",
+    "spend",
+    "cpc",
+    "cost_per_click",
+    "budget_daily",
+    "revenue",
+    "roas",
+    "sessions",
+    "new_users",
+    "returning_users",
+    "bounce_rate",
+    "avg_session_sec",
+    "pages_per_session",
+    "video_views",
+    "video_completions",
+    "engagement_score",
+    "quality_score",
+    "is_active",
+    "attribution_window",
+    "account_currency",
+    "data_source",
+    "legacy_campaign_id",
+    "notes",
 )
 
 NOTE_TEXTS = (
@@ -173,9 +203,7 @@ def build(destination: Path, seed: int) -> int:
                 impressions = int(rng.uniform(2_000, 60_000) * campaign["quality"])
                 ctr = max(
                     0.0005,
-                    campaign["base_ctr"]
-                    * DEVICE_CTR_MULTIPLIER[device]
-                    * rng.uniform(0.7, 1.3),
+                    campaign["base_ctr"] * DEVICE_CTR_MULTIPLIER[device] * rng.uniform(0.7, 1.3),
                 )
                 clicks = max(1, int(impressions * ctr))
 
@@ -231,11 +259,11 @@ def build(destination: Path, seed: int) -> int:
                         round(clicks / impressions, 6) if impressions else 0.0,
                         conversions,
                         legacy_conversions,
-                        round(observed_rate, 6),           # fraction, 0-1
-                        round(observed_rate * 100, 4),     # SAME metric as a percentage
+                        round(observed_rate, 6),  # fraction, 0-1
+                        round(observed_rate * 100, 4),  # SAME metric as a percentage
                         f"{spend:.2f}",
                         f"{cpc:.4f}",
-                        f"{cpc:.4f}",                      # exact duplicate of cpc
+                        f"{cpc:.4f}",  # exact duplicate of cpc
                         round(rng.uniform(50, 900), 2),
                         f"{revenue:.2f}",
                         roas,
@@ -251,8 +279,8 @@ def build(destination: Path, seed: int) -> int:
                         rng.randrange(1, 11),
                         "true" if rng.random() < 0.92 else "false",
                         "28d",
-                        "USD",          # constant
-                        "ads_api_v2",   # constant
+                        "USD",  # constant
+                        "ads_api_v2",  # constant
                         f"LEG{rng.randrange(1000, 9999)}"
                         if rng.random() < LEGACY_ID_FILL_RATE
                         else "",

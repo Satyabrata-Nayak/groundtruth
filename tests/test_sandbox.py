@@ -72,7 +72,8 @@ def test_simple_aggregate(dataset):
 def test_group_by(dataset):
     ds, v = dataset
     result = execute_sql(
-        ds, v,
+        ds,
+        v,
         f"SELECT region, SUM(revenue) AS r FROM {sandbox.TABLE_NAME} "
         "GROUP BY region ORDER BY r DESC",
     )
@@ -84,7 +85,8 @@ def test_cte_is_allowed(dataset):
     """WITH is a legitimate analytical construct and must not be collateral damage."""
     ds, v = dataset
     result = execute_sql(
-        ds, v,
+        ds,
+        v,
         f"WITH per_region AS (SELECT region, SUM(revenue) r FROM {sandbox.TABLE_NAME} "
         "GROUP BY region) SELECT MAX(r) FROM per_region",
     )
@@ -94,7 +96,8 @@ def test_cte_is_allowed(dataset):
 def test_subquery_and_derived_profit(dataset):
     ds, v = dataset
     result = execute_sql(
-        ds, v,
+        ds,
+        v,
         f"SELECT SUM(revenue - cost) FROM {sandbox.TABLE_NAME} WHERE region IN "
         f"(SELECT region FROM {sandbox.TABLE_NAME} WHERE revenue > 900)",
     )
@@ -104,7 +107,8 @@ def test_subquery_and_derived_profit(dataset):
 def test_union_is_allowed(dataset):
     ds, v = dataset
     result = execute_sql(
-        ds, v,
+        ds,
+        v,
         f"SELECT region FROM {sandbox.TABLE_NAME} WHERE revenue > 1000 "
         f"UNION SELECT region FROM {sandbox.TABLE_NAME} WHERE cost < 350",
     )
@@ -131,51 +135,51 @@ def test_schema_matches_the_queryable_view(dataset):
 
 ATTACKS = [
     # --- data destruction / modification -------------------------------------
-    ("DROP TABLE dataset",                          "destroy the dataset view"),
-    ("DELETE FROM dataset",                         "delete rows"),
-    ("UPDATE dataset SET revenue = 0",              "falsify data"),
+    ("DROP TABLE dataset", "destroy the dataset view"),
+    ("DELETE FROM dataset", "delete rows"),
+    ("UPDATE dataset SET revenue = 0", "falsify data"),
     ("INSERT INTO dataset VALUES (9,'2024-01-01','X',1,1)", "inject rows"),
-    ("CREATE TABLE evil (a INT)",                   "create state"),
-    ("ALTER TABLE dataset RENAME TO other",         "modify schema"),
-    ("TRUNCATE dataset",                            "empty the table"),
-
+    ("CREATE TABLE evil (a INT)", "create state"),
+    ("ALTER TABLE dataset RENAME TO other", "modify schema"),
+    ("TRUNCATE dataset", "empty the table"),
     # --- reading files outside the dataset -----------------------------------
-    ("SELECT * FROM read_csv('C:/Windows/win.ini')",       "read a system file"),
-    ("SELECT * FROM read_text('/etc/passwd')",             "read a system file"),
+    ("SELECT * FROM read_csv('C:/Windows/win.ini')", "read a system file"),
+    ("SELECT * FROM read_text('/etc/passwd')", "read a system file"),
     ("SELECT * FROM read_blob('C:/Users/nsaty/.ssh/id_rsa')", "exfiltrate a private key"),
     ("SELECT * FROM read_parquet('C:/other/data.parquet')", "read another dataset"),
-    ("SELECT * FROM glob('C:/Users/*')",                   "enumerate the filesystem"),
-    ("SELECT * FROM read_json_auto('C:/secrets.json')",    "read a system file"),
-
+    ("SELECT * FROM glob('C:/Users/*')", "enumerate the filesystem"),
+    ("SELECT * FROM read_json_auto('C:/secrets.json')", "read a system file"),
     # --- writing out / exfiltration ------------------------------------------
-    ("COPY (SELECT * FROM dataset) TO 'C:/tmp/leak.csv'",  "exfiltrate to disk"),
-    ("EXPORT DATABASE 'C:/tmp/dump'",                      "dump everything"),
-
+    ("COPY (SELECT * FROM dataset) TO 'C:/tmp/leak.csv'", "exfiltrate to disk"),
+    ("EXPORT DATABASE 'C:/tmp/dump'", "dump everything"),
     # --- escaping the sandbox ------------------------------------------------
-    ("ATTACH 'C:/other.db' AS other",               "mount another database"),
-    ("INSTALL httpfs",                              "add network capability"),
-    ("LOAD httpfs",                                 "add network capability"),
-    ("SET enable_external_access=true",             "undo the lockdown"),
-    ("PRAGMA disable_verification",                 "change engine behaviour"),
-
+    ("ATTACH 'C:/other.db' AS other", "mount another database"),
+    ("INSTALL httpfs", "add network capability"),
+    ("LOAD httpfs", "add network capability"),
+    ("SET enable_external_access=true", "undo the lockdown"),
+    ("PRAGMA disable_verification", "change engine behaviour"),
     # --- multiple statements, the classic injection shape ---------------------
-    ("SELECT 1; DROP TABLE dataset",                        "smuggle a second statement"),
-    ("SELECT 1; /* comment */ DELETE FROM dataset",         "comment-smuggled statement"),
-    ("SELECT 1;;DROP TABLE dataset",                        "empty statement between"),
-
+    ("SELECT 1; DROP TABLE dataset", "smuggle a second statement"),
+    ("SELECT 1; /* comment */ DELETE FROM dataset", "comment-smuggled statement"),
+    ("SELECT 1;;DROP TABLE dataset", "empty statement between"),
     # --- hiding a write inside a legitimate-looking query ---------------------
-    ("WITH x AS (SELECT 1) DELETE FROM dataset",            "CTE wrapping a delete"),
-    ("WITH x AS (SELECT * FROM read_csv('/etc/passwd')) SELECT * FROM x",
-     "CTE wrapping a file read"),
-    ("SELECT * FROM dataset WHERE region IN (SELECT * FROM read_text('/etc/passwd'))",
-     "subquery reading a file"),
-    ("SELECT (SELECT content FROM read_text('/etc/passwd')) AS leaked",
-     "scalar subquery reading a file"),
-
+    ("WITH x AS (SELECT 1) DELETE FROM dataset", "CTE wrapping a delete"),
+    (
+        "WITH x AS (SELECT * FROM read_csv('/etc/passwd')) SELECT * FROM x",
+        "CTE wrapping a file read",
+    ),
+    (
+        "SELECT * FROM dataset WHERE region IN (SELECT * FROM read_text('/etc/passwd'))",
+        "subquery reading a file",
+    ),
+    (
+        "SELECT (SELECT content FROM read_text('/etc/passwd')) AS leaked",
+        "scalar subquery reading a file",
+    ),
     # --- malformed ------------------------------------------------------------
-    ("",                                            "empty query"),
-    ("   ",                                         "whitespace only"),
-    ("NOT SQL AT ALL !!!",                          "garbage"),
+    ("", "empty query"),
+    ("   ", "whitespace only"),
+    ("NOT SQL AT ALL !!!", "garbage"),
 ]
 
 

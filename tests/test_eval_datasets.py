@@ -33,8 +33,7 @@ def generated(tmp_path_factory):
     for name, spec in BY_NAME.items():
         path = spec.generate(directory)
         con.execute(
-            f'CREATE VIEW "{name}" AS SELECT * FROM '
-            f"read_csv('{path.as_posix()}', sample_size=-1)"
+            f"CREATE VIEW \"{name}\" AS SELECT * FROM read_csv('{path.as_posix()}', sample_size=-1)"
         )
     return con
 
@@ -90,8 +89,7 @@ def test_q3_revenue_rises_while_profit_falls(generated):
 def test_q3_has_both_planted_causes(generated):
     """Discounting deepens AND the low-margin category grows. Both, not either."""
     discounts = dict(
-        rows(generated, "SELECT quarter(order_date), avg(discount_pct) "
-                        "FROM ecommerce GROUP BY 1")
+        rows(generated, "SELECT quarter(order_date), avg(discount_pct) FROM ecommerce GROUP BY 1")
     )
     assert discounts[3] > discounts[2] * 2
 
@@ -114,8 +112,7 @@ def test_west_leads_on_revenue_and_trails_on_margin(generated):
     )
     by_margin = rows(
         generated,
-        "SELECT region FROM ecommerce GROUP BY 1 "
-        "ORDER BY sum(revenue - cost) / sum(revenue) DESC",
+        "SELECT region FROM ecommerce GROUP BY 1 ORDER BY sum(revenue - cost) / sum(revenue) DESC",
     )
     assert by_revenue[0][0] == "West"
     assert by_margin[-1][0] == "West"
@@ -159,8 +156,7 @@ def test_variant_b_converts_better(generated):
     result = dict(
         rows(
             generated,
-            "SELECT variant, sum(conversions) * 1.0 / sum(clicks) "
-            "FROM marketing GROUP BY 1",
+            "SELECT variant, sum(conversions) * 1.0 / sum(clicks) FROM marketing GROUP BY 1",
         )
     )
     assert result["B"] > result["A"] * 1.10
@@ -168,9 +164,7 @@ def test_variant_b_converts_better(generated):
 
 def test_conv_is_a_distinct_legacy_column(generated):
     """If `conv` ever equals `conversions`, the ambiguity trap has evaporated."""
-    ratio = scalar(
-        generated, "SELECT sum(conv) * 1.0 / sum(conversions) FROM marketing"
-    )
+    ratio = scalar(generated, "SELECT sum(conv) * 1.0 / sum(conversions) FROM marketing")
     assert 0.80 < ratio < 0.90
     disagreeing = scalar(
         generated, "SELECT count(*) FILTER (WHERE conv <> conversions) FROM marketing"
@@ -179,16 +173,15 @@ def test_conv_is_a_distinct_legacy_column(generated):
 
 
 def test_cvr_is_conversion_rate_as_a_percentage(generated):
-    ratio = scalar(
-        generated, "SELECT avg(cvr) / avg(conversion_rate) FROM marketing"
-    )
+    ratio = scalar(generated, "SELECT avg(cvr) / avg(conversion_rate) FROM marketing")
     assert abs(ratio - 100.0) < 0.5
 
 
 def test_cost_per_click_duplicates_cpc(generated):
-    assert scalar(
-        generated, "SELECT count(*) FILTER (WHERE cpc <> cost_per_click) FROM marketing"
-    ) == 0
+    assert (
+        scalar(generated, "SELECT count(*) FILTER (WHERE cpc <> cost_per_click) FROM marketing")
+        == 0
+    )
 
 
 def test_audience_segment_is_not_an_alias_of_channel(generated):
@@ -233,9 +226,7 @@ def test_channel_returns_are_plausible(generated):
 def test_dead_columns_are_present(generated):
     assert scalar(generated, "SELECT count(DISTINCT account_currency) FROM marketing") == 1
     assert scalar(generated, "SELECT count(DISTINCT data_source) FROM marketing") == 1
-    notes_null = scalar(
-        generated, "SELECT 1 - count(notes) * 1.0 / count(*) FROM marketing"
-    )
+    notes_null = scalar(generated, "SELECT 1 - count(notes) * 1.0 / count(*) FROM marketing")
     assert notes_null > 0.9
 
 
@@ -286,8 +277,7 @@ def test_the_dead_sensor_keeps_its_rows_but_loses_its_readings(generated):
     missing = dict(
         rows(
             generated,
-            "SELECT sensor_id, 1 - count(temperature_c) * 1.0 / count(*) "
-            "FROM sensors GROUP BY 1",
+            "SELECT sensor_id, 1 - count(temperature_c) * 1.0 / count(*) FROM sensors GROUP BY 1",
         )
     )
     assert missing[sensors.DEAD_SENSOR] == pytest.approx(sensors.DEAD_FRACTION, abs=0.001)

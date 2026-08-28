@@ -141,7 +141,10 @@ def build(destination: Path, seed: int) -> int:
                                 sensor_id,
                                 location,
                                 machine,
-                                "", "", "", "",
+                                "",
+                                "",
+                                "",
+                                "",
                                 0,
                                 "offline",
                             ]
@@ -198,8 +201,7 @@ SPEC = DatasetSpec(
     ),
     seed=20240722,
     planted_effects=(
-        "Temperature follows a daily cycle peaking at 14:00 and troughing "
-        "around 02:00-04:00.",
+        "Temperature follows a daily cycle peaking at 14:00 and troughing around 02:00-04:00.",
         f"S-07 drifts upward from {DRIFT_START_DATE}; over the last ten days it "
         f"averages about 6.6C above its own earlier baseline, while its all-period "
         f"average stays within ~0.3C of the other compressor.",

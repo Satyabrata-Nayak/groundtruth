@@ -135,9 +135,23 @@ _FORBIDDEN_NODE_TYPES: tuple[type, ...] = tuple(
     for node in (
         getattr(sqlexp, name, None)
         for name in (
-            "Insert", "Update", "Delete", "Drop", "Create", "Alter",
-            "Attach", "Detach", "Copy", "Command", "Pragma", "Set",
-            "Grant", "Merge", "Export", "Load", "Install",
+            "Insert",
+            "Update",
+            "Delete",
+            "Drop",
+            "Create",
+            "Alter",
+            "Attach",
+            "Detach",
+            "Copy",
+            "Command",
+            "Pragma",
+            "Set",
+            "Grant",
+            "Merge",
+            "Export",
+            "Load",
+            "Install",
         )
     )
     if node is not None
@@ -147,9 +161,22 @@ _FORBIDDEN_NODE_TYPES: tuple[type, ...] = tuple(
 # engine level; naming them here produces a clear message instead of a permission error,
 # which matters when the message is fed back to a model for repair.
 _FORBIDDEN_FUNCTIONS = {
-    "read_csv", "read_csv_auto", "read_parquet", "read_json", "read_json_auto",
-    "read_text", "read_blob", "read_ndjson", "glob", "parquet_scan", "csv_scan",
-    "delta_scan", "iceberg_scan", "postgres_scan", "sqlite_scan", "mysql_scan",
+    "read_csv",
+    "read_csv_auto",
+    "read_parquet",
+    "read_json",
+    "read_json_auto",
+    "read_text",
+    "read_blob",
+    "read_ndjson",
+    "glob",
+    "parquet_scan",
+    "csv_scan",
+    "delta_scan",
+    "iceberg_scan",
+    "postgres_scan",
+    "sqlite_scan",
+    "mysql_scan",
 }
 
 
@@ -157,9 +184,7 @@ def _reject_forbidden_nodes(root: sqlexp.Expression) -> None:
     """Walk the whole tree, including subqueries and CTE bodies."""
     for node in root.walk():
         if isinstance(node, _FORBIDDEN_NODE_TYPES):
-            raise SqlValidationError(
-                f"{type(node).__name__.upper()} is not permitted in a query"
-            )
+            raise SqlValidationError(f"{type(node).__name__.upper()} is not permitted in a query")
         if isinstance(node, sqlexp.Table):
             _reject_table_function(node)
         if isinstance(node, sqlexp.Anonymous):
@@ -275,13 +300,13 @@ def execute_sql(
     max_rows = settings.max_result_rows if max_rows is None else max_rows
     timeout_s = settings.query_timeout_s if timeout_s is None else timeout_s
 
-    validate_sql(sql)                                            # L1
+    validate_sql(sql)  # L1
     parquet = storage.resolve_existing_parquet(dataset_id, version)  # L3
 
-    con = _open_confined_connection(parquet)                     # L2
+    con = _open_confined_connection(parquet)  # L2
     started = time.perf_counter()
     try:
-        cursor = _run_with_timeout(con, sql, timeout_s)          # L4
+        cursor = _run_with_timeout(con, sql, timeout_s)  # L4
         columns = [d[0] for d in cursor.description] if cursor.description else []
 
         # Fetch one more row than the cap so truncation is detectable rather than

@@ -154,8 +154,10 @@ def test_label_respects_word_boundaries():
 def test_label_with_punctuation_is_matched_literally():
     question = make_question(answer_kind="label")
     expected = make_expected(
-        labels=["Home & Garden"], rows=[["Home & Garden"]],
-        facts={"c": "Home & Garden"}, scalar=None,
+        labels=["Home & Garden"],
+        rows=[["Home & Garden"]],
+        facts={"c": "Home & Garden"},
+        scalar=None,
     )
     assert grade(question, expected, "Home & Garden leads.").correct
 
@@ -261,9 +263,7 @@ def test_assumption_question_needs_an_explicit_marker():
     bare = grade(question, make_expected(), "The conversions rate is 3.5%.")
     assert not bare.correct
 
-    stated = grade(
-        question, make_expected(), "Using the conversions column, the rate is 3.5%."
-    )
+    stated = grade(question, make_expected(), "Using the conversions column, the rate is 3.5%.")
     assert stated.correct
 
 
@@ -272,7 +272,9 @@ def test_assumption_question_needs_an_explicit_marker():
 
 def test_invented_tool_names_fail_the_question():
     result = grade(
-        make_question(), make_expected(), "The total is 42.",
+        make_question(),
+        make_expected(),
+        "The total is 42.",
         unknown_tools=["run_python"],
     )
     assert result.values_correct
