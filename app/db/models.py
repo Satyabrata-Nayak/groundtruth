@@ -312,6 +312,16 @@ class Analysis(Base):
     # they expressed none and the model's own default applies.
     llm_thinking: Mapped[bool | None] = mapped_column(Boolean)
 
+    # Which thread this question belongs to, and where in it. NULL is a one-off ask,
+    # which is what every analysis made before conversations existed was.
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    # Ordering within the thread. Not derived from created_at: two questions asked in
+    # the same millisecond would then have no defined order, and the whole point of the
+    # thread is that "the previous answer" is unambiguous.
+    turn_index: Mapped[int | None] = mapped_column(Integer)
+
     # A caller-supplied key that makes POST /analyses safe to retry. Unique, and
     # nullable: Postgres permits many NULLs in a unique index, so callers that do not
     # care are not forced to invent one. See D-024.
@@ -387,3 +397,98 @@ class AnalysisEvent(Base):
     )
 
     analysis: Mapped[Analysis] = relationship(back_populates="events")
+
+
+class Conversation(Base):
+    """A thread of questions about one dataset version.
+
+    WHY A THREAD IS AN ENTITY AND NOT JUST A UI ARRAY
+    -------------------------------------------------
+    Without this, "what about last year?" is unanswerable: the worker sees one question,
+    with no idea what "last year" is being compared to. The thread is what makes a
+    follow-up mean something, and it has to live in the database rather than in React
+    state because the worker — a different process — is the thing that needs it.
+
+    PINNED TO A DATASET VERSION, LIKE AN ANALYSIS
+    ---------------------------------------------
+    A conversation cannot span datasets. Half a thread about `retail` and half about
+    `sensors` would let the model carry a fact from one into an answer about the other,
+    which is the exact class of plausible-but-wrong this project exists to prevent.
+    """
+
+    __tablename__ = "conversations"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    dataset_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False
+    )
+    dataset_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class AnswerCache(Base):
+    """The same question, on the same data, answered by the same model: replay it.
+
+    WHY THIS IS WORTH A TABLE
+    -------------------------
+    An analysis costs 90-190 seconds of local GPU. Asking it twice costs 380. The result
+    is a pure function of four things — dataset, version, question, model — and every one
+    of them is already known before any work starts, so the second ask can be answered in
+    about five milliseconds from a primary-key lookup.
+
+    THE CACHE KEY IS THE CORRECTNESS ARGUMENT
+    -----------------------------------------
+    `dataset_version` is in the key, so a new upload cannot serve a stale answer — the
+    same reason the version is pinned on the analysis itself. `llm_model` is in the key,
+    because the two models genuinely disagree and a cached Qwen2.5 answer must not be
+    served to somebody who asked for Qwen3. The question is normalised (lowercased,
+    whitespace collapsed, trailing punctuation dropped) so "Which country earns most?"
+    and "which country earns most" are one entry rather than two.
+
+    WHAT IS DELIBERATELY NOT CACHED
+    -------------------------------
+    Anything that failed, and anything carrying an unverified figure. Replaying a wrong
+    answer instantly is worse than recomputing it slowly, because speed reads as
+    confidence.
+
+    NEXT STEP, DESIGNED FOR AND NOT BUILT: `question_embedding vector(768)` alongside the
+    hash, so "which country earns most" also hits "top country by revenue". That needs
+    the pgvector extension and an embedding model; the exact-match key below is the
+    subset of it that costs neither.
+    """
+
+    __tablename__ = "answer_cache"
+    __table_args__ = (
+        # One row per (data, question, model). The lookup is this index.
+        UniqueConstraint(
+            "dataset_id",
+            "dataset_version",
+            "question_hash",
+            "llm_model",
+            name="uq_answer_cache_key",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    dataset_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False
+    )
+    dataset_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    # sha256 of the normalised question. Hashed rather than stored raw because it is an
+    # index key: a 64-character fixed width beats an unbounded question in a unique index.
+    question_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Kept alongside the hash so a human reading this table can see what was asked.
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    llm_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    result: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # Evidence that the cache is worth having, rather than a belief that it is.
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

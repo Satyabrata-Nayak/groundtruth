@@ -104,6 +104,7 @@ def run_agent_analysis(
     checkpoint: Checkpoint,
     llm_model: str | None = None,
     llm_thinking: bool | None = None,
+    history: str = "",
     client: LlmClient | None = None,
     registry: ToolRegistry | None = None,
 ) -> dict[str, Any]:
@@ -133,6 +134,7 @@ def run_agent_analysis(
             question=question,
             emit=emit,
             checkpoint=checkpoint,
+            history=history,
             max_steps=settings.agent_max_steps,
             max_tool_rounds=settings.agent_max_tool_rounds,
             time_budget_s=settings.agent_time_budget_s,
@@ -152,6 +154,7 @@ def _run(
     question: str,
     emit: Emit,
     checkpoint: Checkpoint,
+    history: str,
     max_steps: int,
     max_tool_rounds: int,
     time_budget_s: float,
@@ -183,7 +186,7 @@ def _run(
         raise AnalysisFailed(str(exc)) from exc
 
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": build_system_prompt(schema.data, samples)},
+        {"role": "system", "content": build_system_prompt(schema.data, samples, history)},
         {"role": "user", "content": build_user_prompt(question)},
     ]
     specs = registry.specs(only=AGENT_TOOLS)

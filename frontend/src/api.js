@@ -66,7 +66,7 @@ export const api = {
   // `model` and `thinking` are the asker's choice, pinned onto the row so the answer
   // stays explicable later. Both null means "use whatever the worker is configured
   // with", which is not the same as choosing the default explicitly.
-  createAnalysis: (datasetId, question, { version, model, thinking } = {}) =>
+  createAnalysis: (datasetId, question, { version, model, thinking, conversationId } = {}) =>
     request('/analyses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -76,6 +76,9 @@ export const api = {
         version: version ?? null,
         model: model ?? null,
         thinking: thinking ?? null,
+        // Omitted on the first question: the API starts a thread and returns its
+        // id, so beginning a conversation never costs an extra round trip.
+        conversation_id: conversationId ?? null,
       }),
     }),
 

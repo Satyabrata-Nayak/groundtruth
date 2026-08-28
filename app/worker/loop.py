@@ -53,10 +53,12 @@ import time
 import uuid
 from typing import Any
 
+from app.agent import memory, rewrite
+from app.agent.contract import Emit
 from app.config import get_settings
 from app.db.models import EventKind
 from app.db.session import session_scope
-from app.jobs import queue
+from app.jobs import cache, notify, queue
 from app.worker.analysis import AnalysisFailed, run_analysis
 from app.worker.heartbeat import Heartbeat, StopRequested
 
@@ -104,19 +106,32 @@ class Worker:
             signal.signal(sig, request_stop)
 
     def run_forever(self) -> None:
+        """Claim and run jobs until asked to stop.
+
+        Idle time is spent blocked on a LISTEN connection rather than sleeping, so a
+        question asked now is claimed now instead of up to `poll_interval_s` later. The
+        interval survives as the timeout on that wait, which is what makes the
+        notification an optimisation rather than a dependency: if it is lost, dropped,
+        or sent while this worker was busy, the wait times out and the poll finds the
+        row anyway.
+        """
         log.info("worker %s started", self.worker_id)
-        while not self._shutdown.is_set():
-            try:
-                if not self.tick():
-                    # Nothing to do. `wait` rather than `sleep` so a signal arriving
-                    # mid-idle stops the worker immediately instead of a second later.
+        with notify.WorkSignal(fallback_interval_s=self.poll_interval_s) as signal_:
+            while not self._shutdown.is_set():
+                try:
+                    if not self.tick():
+                        # Nothing to do. Block on the socket, waking on a notification
+                        # or on the fallback timeout — but check the shutdown flag
+                        # first, so a signal arriving mid-idle is not held up by it.
+                        if self._shutdown.wait(0):
+                            break
+                        signal_.wait()
+                except Exception:  # noqa: BLE001
+                    # A crash in the loop itself — Postgres restarted, say — must not
+                    # kill the worker. Back off one interval and try again; the job it
+                    # was holding, if any, is recovered by the sweep.
+                    log.exception("worker loop error; backing off")
                     self._shutdown.wait(self.poll_interval_s)
-            except Exception:  # noqa: BLE001
-                # A crash in the loop itself — Postgres restarted, say — must not kill
-                # the worker. Back off one interval and try again; the job it was
-                # holding, if any, is recovered by the sweep.
-                log.exception("worker loop error; backing off")
-                self._shutdown.wait(self.poll_interval_s)
         log.info("worker %s stopped", self.worker_id)
 
     def tick(self) -> bool:
@@ -165,18 +180,30 @@ class Worker:
             with session_scope() as session:
                 queue.emit(session, claimed.id, kind, message, payload)
 
+        # --- before any model runs: has this exact question already been answered? ---
+        #
+        # The result is a pure function of (dataset, version, question, model), and all
+        # four are known here. A hit turns 90-190 seconds of GPU into a primary-key
+        # lookup. Done outside the Heartbeat block because there is nothing to keep
+        # alive: the whole path is a few milliseconds.
+        question, history = self._prepare(claimed, emit)
+        if (cached := self._cached(claimed, question, emit)) is not None:
+            self._succeed(claimed, cached)
+            return
+
         with Heartbeat(claimed.id, self.worker_id, interval_s=self.heartbeat_interval_s) as beat:
             try:
                 result = run_analysis(
                     dataset_id=claimed.dataset_id,
                     version=claimed.dataset_version,
-                    question=claimed.question,
+                    question=question,
                     emit=emit,
                     checkpoint=beat.checkpoint,
                     # What the asker chose, pinned on the row at ask time. None for
                     # either falls back to this worker's configuration.
                     llm_model=claimed.llm_model,
                     llm_thinking=claimed.llm_thinking,
+                    history=history,
                 )
             except StopRequested as stop:
                 self._handle_stop(claimed, stop)
@@ -200,7 +227,74 @@ class Worker:
                 self._fail(claimed, message)
                 return
 
+            self._remember(claimed, question, result)
             self._succeed(claimed, result)
+
+    # -- memory, rewriting and the cache -----------------------------------
+
+    def _prepare(self, claimed: queue.ClaimedAnalysis, emit: Emit) -> tuple[str, str]:
+        """Resolve the question against its thread, and render the history block.
+
+        Two things happen here and they are separate on purpose. The REWRITE makes the
+        question stand alone, which is what lets the cache key mean anything — "what
+        about France?" hashes differently in every thread, and its standalone form
+        hashes the same as somebody asking it directly. The HISTORY still goes to the
+        analyst afterwards, because a resolved question can still benefit from knowing
+        what was already established.
+        """
+        if claimed.conversation_id is None:
+            return claimed.question, ""
+
+        with session_scope() as session:
+            turns = memory.recent_turns(session, claimed.conversation_id)
+        if not turns:
+            return claimed.question, ""
+
+        question = claimed.question
+        if rewrite.needs_rewriting(question, turns):
+            resolved = rewrite.rewrite(question, turns)
+            if resolved != question:
+                emit(
+                    EventKind.NOTE,
+                    f"read as: {resolved}",
+                    {"original": question, "rewritten": resolved},
+                )
+                question = resolved
+
+        return question, memory.render(turns)
+
+    def _cached(
+        self, claimed: queue.ClaimedAnalysis, question: str, emit: Emit
+    ) -> dict[str, Any] | None:
+        model = claimed.llm_model or get_settings().llm_model
+        with session_scope() as session:
+            hit = cache.lookup(
+                session,
+                dataset_id=claimed.dataset_id,
+                dataset_version=claimed.dataset_version,
+                question=question,
+                llm_model=model,
+            )
+        if hit is not None:
+            emit(
+                EventKind.NOTE,
+                "answered from cache — this exact question was already computed",
+                {"cached": True, "model": model},
+            )
+        return hit
+
+    def _remember(
+        self, claimed: queue.ClaimedAnalysis, question: str, result: dict[str, Any]
+    ) -> None:
+        with session_scope() as session:
+            cache.store(
+                session,
+                dataset_id=claimed.dataset_id,
+                dataset_version=claimed.dataset_version,
+                question=question,
+                llm_model=claimed.llm_model or get_settings().llm_model,
+                result=result,
+            )
 
     def _handle_stop(self, claimed: queue.ClaimedAnalysis, stop: StopRequested) -> None:
         if stop.reason == "cancelled":

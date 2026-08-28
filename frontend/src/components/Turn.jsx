@@ -56,6 +56,15 @@ export default function Turn({ turn, onStatusChange }) {
           <>
             <p className="answer">{result.answer}</p>
 
+            {/* An answer that arrives in five milliseconds must say why, or speed
+                reads as confidence. */}
+            {result.cached && (
+              <p className="replayed">
+                ↺ replayed from an identical question already computed on this data — no
+                model was run
+              </p>
+            )}
+
             {result.warnings?.map((warning) => (
               <Callout key={warning}>
                 <b>Unverified.</b> {warning}

@@ -90,6 +90,7 @@ def run_analysis(
     checkpoint: Checkpoint,
     llm_model: str | None = None,
     llm_thinking: bool | None = None,
+    history: str = "",
 ) -> dict[str, Any]:
     """Run the configured engine and return the result payload.
 
@@ -117,6 +118,7 @@ def run_analysis(
         checkpoint=checkpoint,
         llm_model=llm_model,
         llm_thinking=llm_thinking,
+        history=history,
     )
 
 

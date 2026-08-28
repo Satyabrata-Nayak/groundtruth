@@ -74,6 +74,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.db.models import Analysis, AnalysisEvent, AnalysisStatus, EventKind
+from app.jobs import notify
 
 
 @dataclass(frozen=True)
@@ -96,6 +97,8 @@ class ClaimedAnalysis:
     # configuration", which is what every row written before the columns existed says.
     llm_model: str | None = None
     llm_thinking: bool | None = None
+    # The thread this question belongs to, so the worker can load its history.
+    conversation_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -133,6 +136,8 @@ def enqueue(
     idempotency_key: str | None = None,
     llm_model: str | None = None,
     llm_thinking: bool | None = None,
+    conversation_id: uuid.UUID | None = None,
+    turn_index: int | None = None,
 ) -> tuple[Analysis, bool]:
     """Add a question to the queue. Returns (analysis, created).
 
@@ -153,10 +158,15 @@ def enqueue(
             status=AnalysisStatus.PENDING,
             llm_model=llm_model,
             llm_thinking=llm_thinking,
+            conversation_id=conversation_id,
+            turn_index=turn_index,
         )
         session.add(analysis)
         session.flush()
         emit(session, analysis.id, EventKind.QUEUED, "queued")
+        # Wakes an idle worker the moment this commits, instead of leaving it to
+        # notice on its next poll. Best-effort: the poll is still the guarantee.
+        notify.notify_new_work(session)
         return analysis, True
 
     stmt = (
@@ -170,6 +180,8 @@ def enqueue(
             status=AnalysisStatus.PENDING,
             llm_model=llm_model,
             llm_thinking=llm_thinking,
+            conversation_id=conversation_id,
+            turn_index=turn_index,
         )
         .on_conflict_do_nothing(index_elements=[Analysis.idempotency_key])
         .returning(Analysis.id)
@@ -182,6 +194,7 @@ def enqueue(
         ).one()
         return existing, False
 
+    notify.notify_new_work(session)
     analysis = session.get(Analysis, inserted_id)
     assert analysis is not None  # just inserted in this transaction
     emit(session, analysis.id, EventKind.QUEUED, "queued")
@@ -238,6 +251,7 @@ def claim_next(session: Session, worker_id: str) -> ClaimedAnalysis | None:
             # came from a model that never saw the question.
             Analysis.llm_model,
             Analysis.llm_thinking,
+            Analysis.conversation_id,
         )
         .execution_options(synchronize_session=False)
     )
@@ -254,6 +268,7 @@ def claim_next(session: Session, worker_id: str) -> ClaimedAnalysis | None:
         worker_id=worker_id,
         llm_model=row.llm_model,
         llm_thinking=row.llm_thinking,
+        conversation_id=row.conversation_id,
     )
     emit(
         session,

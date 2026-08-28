@@ -50,6 +50,11 @@ export default function App() {
   const [turns, setTurns] = useState([])
   const [health, setHealth] = useState(null)
   const [runningId, setRunningId] = useState(null)
+  // The thread the next question continues. Held in state rather than persisted:
+  // a conversation is scoped to one dataset and one sitting, and reloading the page
+  // to a thread whose earlier answers are no longer on screen would be worse than
+  // starting fresh.
+  const [conversationId, setConversationId] = useState(null)
   const [models, setModels] = useState([])
   // The chosen model and reasoning flag persist across reloads, because a preference
   // you have to re-make every visit is not a preference. Wrapped in try/catch: a
@@ -92,7 +97,14 @@ export default function App() {
   async function ask(question) {
     if (!selected) return
     try {
-      const analysis = await api.createAnalysis(selected.id, question, { model, thinking })
+      const analysis = await api.createAnalysis(selected.id, question, {
+        model,
+        thinking,
+        conversationId,
+      })
+      // Captured from the FIRST answer and sent with every one after it. This single
+      // line is what turns a list of independent questions into a conversation.
+      setConversationId(analysis.conversation_id ?? conversationId)
       setRunningId(analysis.id)
       setTurns((current) => [...current, { question, analysisId: analysis.id }])
     } catch (err) {
@@ -116,6 +128,9 @@ export default function App() {
     // which was which.
     setTurns([])
     setRunningId(null)
+    // A thread belongs to one dataset. Carrying it across would let a follow-up about
+    // `sensors` be answered with a fact established about `retail`.
+    setConversationId(null)
   }
 
   return (

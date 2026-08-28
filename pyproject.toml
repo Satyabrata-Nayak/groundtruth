@@ -14,22 +14,21 @@ dependencies = [
     "alembic>=1.13",           # schema migrations, versioned from the first table
     "psycopg[binary]>=3.1",    # Postgres driver (v3; binary wheel avoids a C toolchain on Windows)
     "duckdb>=1.0",             # M1: bench grades generated SQL by EXECUTING it, not by
-                               # regex. M2 onward: the analytical query engine itself.
-
+    # regex. M2 onward: the analytical query engine itself.
     # M2 — SQL safety
     "sqlglot>=30.17",          # parse SQL to an AST so the executor can ALLOWLIST
-                               # (root node must be SELECT/WITH) instead of blocklisting
-                               # keywords, which comments and nesting defeat.
-
+    # (root node must be SELECT/WITH) instead of blocklisting
+    # keywords, which comments and nesting defeat.
     # M4 — the HTTP surface. No task queue library appears here on purpose: the job
     # queue is Postgres (SELECT ... FOR UPDATE SKIP LOCKED), so Celery and Redis would
     # add two runtime services to solve a problem the database already solves. See D-022.
     "fastapi>=0.115",          # typed request/response models reuse the pydantic already
-                               # present, and OpenAPI is generated rather than written.
+    # present, and OpenAPI is generated rather than written.
     "uvicorn[standard]>=0.30",  # ASGI server. [standard] adds httptools + uvloop-equivalent
-                               # and, on Windows, the watchfiles reloader.
+    # and, on Windows, the watchfiles reloader.
     "python-multipart>=0.0.9",  # multipart/form-data parsing; FastAPI refuses to start a
-                                # route with UploadFile without it.
+    # route with UploadFile without it.
+    "mcp>=1.2",
 ]
 
 [project.optional-dependencies]

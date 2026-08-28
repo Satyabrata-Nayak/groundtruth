@@ -1210,3 +1210,167 @@ for it expecting speed.
 evaluation set changes without a re-run. The numbers name their source in the menu
 footer (`python -m eval.runner --agent local-model`) so a sceptical reader can check
 them rather than trust them.
+
+---
+
+## D-040 — A conversation is a database entity, not a React array
+
+**Decision.** `conversations` is a table; `analyses.conversation_id` and `turn_index`
+place a question in a thread. The worker loads the last three successful exchanges into
+the system prompt. A thread is pinned to one dataset AND one version.
+
+**Why in the database.** The thing that needs the history is the *worker*, a different
+process from the browser. Keeping the thread in React state would mean shipping the whole
+conversation with every request — unbounded growth, and the client deciding what the
+model is told.
+
+**What is carried is the interesting part.** Not the conversation. A turn is compressed
+to three fields:
+
+```
+the question   so "last year" has something to attach to
+the answer     so "why is that?" has a referent
+THE SQL        so "same thing but for France" is one edit away
+```
+
+The SQL is the one people leave out and the most valuable of the three. A model that can
+see `SELECT Country, SUM(Quantity*UnitPrice) ... GROUP BY Country` writes the follow-up by
+changing one clause; a model given only the prose has to rediscover the whole query from
+the schema. Tool payloads, event trails and reasoning traces are excluded: they are large
+and nothing ever refers back to them.
+
+**Why three turns.** The literature converges on 3-5 for a rolling window. The binding
+constraint here is tighter than the literature's: at ~120 tokens per compressed turn
+against an 8,192 window where the schema and samples already cost ~1,200, three fits
+comfortably and five starts competing with the results themselves.
+
+**Why the version is pinned.** The same reason it is pinned on an analysis. A follow-up
+must be about the data the first answer described, and half a thread about `retail` beside
+half about `sensors` is exactly how a fact from one ends up in an answer about the other.
+
+**Tradeoffs.** A conversation cannot span datasets — a real limitation, deliberately
+taken. Threads are never garbage-collected yet.
+
+---
+
+## D-041 — Postgres caches answers, because a result is a pure function of four things
+
+**Decision.** `answer_cache`, keyed on `(dataset_id, dataset_version, question_hash,
+llm_model)`. A hit returns the stored result in about five milliseconds, marked
+`cached: true`, and the UI says so in words.
+
+**Why.** An analysis costs 90-190 seconds of local GPU, and every input to it is known
+before any work begins. The second ask has nothing to compute. This is also the honest
+answer to "you are only using Postgres for metadata": it is the queue, the event log, and
+now the memoisation table.
+
+**Every part of the key prevents a specific wrong answer.** The version, so a new upload
+cannot serve an answer about the old file. The model, because the two available models
+score 60% and 29% and one's answer must never reach somebody who asked for the other. The
+hash is of a *normalised* question, so capitalisation and a trailing question mark do not
+create a second entry.
+
+**What is NOT cached matters more than what is.** Failures, and any answer carrying a
+warning — out of budget, answered without querying, or containing a figure that could not
+be traced to a computation. **Speed reads as confidence**: an answer that appears
+instantly looks retrieved and certain, and this system's premise is that a claim is worth
+what its evidence is worth.
+
+**The next version, designed for and not built.** Semantic caching: embed the question,
+match above ~0.8 cosine, so "which country earns most" also hits "top country by revenue"
+— published implementations report 60-70% hit rates against roughly 10% for exact match.
+It needs pgvector (this runs `postgres:16-alpine`, which does not ship it) and an
+embedding model. D-042 recovers part of the same benefit for free.
+
+---
+
+## D-042 — The sub-agent is a smaller model, not another copy of the same one
+
+**Decision.** A query rewriter runs on qwen2.5:3b-instruct (~1 s) and turns "what about
+France?" into a standalone question before the analyst sees it. A cheap keyword gate skips
+it entirely when the question already stands alone.
+
+**Why not fan-out.** The instinct with sub-agents is parallelism: a planner, a SQL writer
+and a critic, all at once. **On one GPU that is strictly a loss.** The model is already
+100% resident and saturating the card; two concurrent calls do not run in parallel, they
+split the same tokens per second between them and add KV-cache pressure. Fan-out buys
+thoroughness and pays for it in latency — the thing this project spent a day removing.
+
+**What pays is a model of a different size.** At ~1 s against the analyst's ~45 s, the
+rewriter costs about 2% of a turn and earns three things: the follow-up is resolved, the
+analyst's prompt gets shorter, and — the one that is easy to miss — **the cache starts
+working on follow-ups.** "What about France?" means something different in every thread
+and can never hash to anything useful; rewritten, it hashes identically to somebody asking
+it directly.
+
+The rule worth keeping: *a sub-agent earns its place when it is cheaper than the model it
+serves, not when it is another copy of it.*
+
+**Tradeoffs.** A rewriter that "improves" a standalone question changes what was asked, so
+it is constrained hard and every failure path returns the original untouched. An
+optimisation that can change the answer is a bug.
+
+---
+
+## D-043 — LISTEN/NOTIFY wakes the worker; SKIP LOCKED remains the queue
+
+**Decision.** `enqueue` issues `NOTIFY analyses_new`. The worker holds a dedicated
+listening connection and blocks on it instead of sleeping between polls. The poll interval
+survives as that wait's timeout.
+
+**Why it is only a wake-up.** Notifications are **not persisted**: anything sent while no
+worker is listening is gone forever. A queue built on them loses every job enqueued during
+a restart. So the table remains the queue and this removes only the waiting — up to a
+second of it, on every question.
+
+**Why the payload is empty.** Sending the analysis id and skipping the claim would be a
+second, unreliable queue: the notification can be lost, two workers can both receive it,
+and payloads cap at 8 KB. The signal says "something changed, go and look"; the database
+stays the only source of truth about what to work on.
+
+**Why a dedicated connection.** `LISTEN` occupies a connection for as long as it listens.
+Borrowing one from the pool would remove it from circulation and hand it back still
+subscribed.
+
+**Tradeoffs.** One extra connection per worker. Every failure path — no permission, an
+older server, a proxy that drops notifications — degrades to plain polling, so correctness
+never depends on a notification arriving.
+
+---
+
+## D-044 — The toolkit is an MCP server; the agent is not
+
+**Decision.** `app/mcp_server.py` publishes `list_datasets`, `inspect_schema`,
+`profile_column`, `execute_sql`, `compare_groups` and `correlation` as MCP **tools**, and a
+dataset's schema and sample rows as MCP **resources**. The agent loop and the job queue are
+not published.
+
+**Why the tools and not the agent.** Publishing "ask a question" would bury a 90-second
+local model call behind one opaque call, and it duplicates reasoning — the client already
+has a model, almost certainly better than qwen3:4b. What this project owns that no client
+has is the deterministic half: an exact profiler, a sandboxed executor that resolves column
+names against a live schema, a grouping tool that refuses meaningless groupings. Those are
+worth publishing. The reasoning is not.
+
+The practical result: Claude Desktop can analyse a 542,000-row Parquet file through the
+same guard rails, with the same "the model never computes anything" property, and none of
+the local model's latency.
+
+**Tools versus resources maps onto a distinction this codebase already made.** Tools are
+model-controlled verbs; resources are application-controlled nouns with addresses
+(`dataset://{id}/schema`). A client can attach the schema up front at no tool call — the
+same argument `app/agent/prompt.py` makes when it hands the schema over rather than making
+the agent go and fetch it.
+
+**The security boundary moves, and is re-established.** `dataset_id` was previously
+unreachable by any model, living only in `ToolContext`. Over MCP the caller supplies it, so
+it is parsed as a UUID and checked against stored datasets before a context exists.
+Everything after that point is the same `registry.call` the local agent uses — one
+implementation, two front doors, so row caps and the SQL allowlist cannot drift apart.
+Verified: `DROP TABLE dataset` through MCP is refused by the same sandbox, with the same
+message.
+
+**Tradeoffs.** The wrappers are written out by hand rather than generated, so a new
+registry tool must be added here too. Generated wrappers needed a private attribute to
+carry the schema, and the descriptions a model actually reads deserve to be visible in the
+source rather than assembled at import time.

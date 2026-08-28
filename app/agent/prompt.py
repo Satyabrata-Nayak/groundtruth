@@ -134,12 +134,23 @@ the whole job; reciting ten rows the reader can already see is slower to produce
 worse to read. No markdown headings, no bullet lists, no code blocks."""
 
 
-def build_system_prompt(schema: dict[str, Any], samples: dict[str, Any] | None) -> str:
-    """The full system message: the standing rules plus this dataset's shape."""
+def build_system_prompt(
+    schema: dict[str, Any],
+    samples: dict[str, Any] | None,
+    history: str = "",
+) -> str:
+    """The full system message: the standing rules, this dataset's shape, the thread.
+
+    History goes LAST, closest to the question. Models attend most strongly to the ends
+    of a prompt, and the history is the part that disambiguates what was asked — while
+    the rules and the schema have to hold whatever was asked before them.
+    """
     parts = [SYSTEM_PROMPT, "", "DATASET SCHEMA", render_schema(schema)]
     rendered_samples = render_samples(samples)
     if rendered_samples:
         parts += ["", "SAMPLE ROWS", rendered_samples]
+    if history:
+        parts += ["", history]
     return "\n".join(parts)
 
 

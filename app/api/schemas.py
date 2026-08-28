@@ -114,6 +114,11 @@ class AnalysisCreate(BaseModel):
     # Tri-state. None is "the asker expressed no preference", which is not False.
     thinking: bool | None = None
 
+    # The thread this question continues. Omitted on the first question of a thread —
+    # the API creates one and returns its id, so a client never needs a second round
+    # trip to start a conversation.
+    conversation_id: uuid.UUID | None = None
+
 
 class AnalysisOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -133,6 +138,10 @@ class AnalysisOut(BaseModel):
     # rather than what the picker happens to be set to now.
     llm_model: str | None = None
     llm_thinking: bool | None = None
+    # Always populated, including for a question that did not supply one: the client
+    # sends it back on the next question and the thread continues.
+    conversation_id: uuid.UUID | None = None
+    turn_index: int | None = None
 
 
 class EventOut(BaseModel):

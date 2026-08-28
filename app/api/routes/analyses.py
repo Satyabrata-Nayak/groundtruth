@@ -28,7 +28,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.agent.models import BY_NAME, is_selectable
@@ -36,7 +36,7 @@ from app.api.deps import get_session
 from app.api.schemas import AnalysisCreate, AnalysisOut, EventOut, EventPage
 from app.data import service
 from app.data.storage import InvalidDatasetIdError
-from app.db.models import Analysis, AnalysisEvent
+from app.db.models import Analysis, AnalysisEvent, Conversation
 from app.jobs import queue
 
 # See the note in routes/datasets.py: the dependency belongs in the type, not in a
@@ -78,6 +78,8 @@ def create_analysis(
             f"unknown model {payload.model!r}. Choose one of: {', '.join(sorted(BY_NAME))}",
         )
 
+    conversation_id, turn_index = _thread(session, payload, dataset.id, version)
+
     analysis, created = queue.enqueue(
         session,
         dataset_id=dataset.id,
@@ -86,10 +88,56 @@ def create_analysis(
         idempotency_key=payload.idempotency_key,
         llm_model=payload.model,
         llm_thinking=payload.thinking,
+        conversation_id=conversation_id,
+        turn_index=turn_index,
     )
     if not created:
         response.status_code = status.HTTP_200_OK
     return AnalysisOut.model_validate(analysis)
+
+
+def _thread(
+    session: Session,
+    payload: AnalysisCreate,
+    dataset_id: uuid.UUID,
+    version: int,
+) -> tuple[uuid.UUID, int]:
+    """Find or start the conversation this question belongs to, and its position.
+
+    Creating one implicitly means a client never needs two round trips to start a
+    thread: ask a question, get a `conversation_id` back, send it with the next one.
+
+    A conversation is REFUSED if it belongs to a different dataset or version. Half a
+    thread about `retail` and half about `sensors` would let the model carry a fact from
+    one into an answer about the other — the exact plausible-but-wrong failure this
+    project exists to prevent. Pinning the version matters for the same reason it does
+    on the analysis: a follow-up must be about the data the first answer described.
+    """
+    if payload.conversation_id is None:
+        conversation = Conversation(dataset_id=dataset_id, dataset_version=version)
+        session.add(conversation)
+        session.flush()
+        return conversation.id, 0
+
+    conversation = session.get(Conversation, payload.conversation_id)
+    if conversation is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no conversation {payload.conversation_id}")
+    if conversation.dataset_id != dataset_id or conversation.dataset_version != version:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "that conversation is about a different dataset or version. Start a new one "
+            "rather than mixing two datasets into one thread.",
+        )
+
+    # COUNT rather than max(turn_index) + 1: the position only has to be a stable total
+    # order within the thread, and a count cannot be knocked out of sequence by a row
+    # whose index was never written.
+    used = session.scalar(
+        select(func.count())
+        .select_from(Analysis)
+        .where(Analysis.conversation_id == conversation.id)
+    )
+    return conversation.id, int(used or 0)
 
 
 def _resolve_version(session: Session, payload: AnalysisCreate) -> int:
