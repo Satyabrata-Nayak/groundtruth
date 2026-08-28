@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     postgres_db: str = "adi"
     postgres_host: str = "localhost"
     postgres_port: int = 5433
+    # Fail fast when nothing is listening, instead of waiting out the OS TCP timeout.
+    db_connect_timeout_s: int = 5
 
     # --- Ollama ---
     ollama_base_url: str = "http://127.0.0.1:11434"
@@ -46,6 +48,14 @@ class Settings(BaseSettings):
     max_result_bytes: int = 10 * 1024 * 1024
     duckdb_memory_limit: str = "2GB"
     duckdb_threads: int = 4
+
+    # --- Tool limits (M3) ---
+    # A tool result is destined for a model's context window, so its cost is measured
+    # in tokens, not bytes. These caps are far tighter than the raw query caps above:
+    # a 10,000-row result would blow the context and teach the model nothing that the
+    # first 50 rows did not.
+    max_tool_result_rows: int = 50
+    max_chart_categories: int = 50
 
     @property
     def database_url(self) -> str:

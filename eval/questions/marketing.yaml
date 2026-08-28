@@ -1,0 +1,299 @@
+# Golden questions for the `marketing` dataset -- 44 columns, four deliberate traps.
+#
+# THE FAIRNESS RULE THIS FILE FOLLOWS
+# -----------------------------------
+# Where two columns could plausibly answer a question (`conversions` vs the legacy
+# `conv`, `conversion_rate` vs `cvr`), the question NAMES the column it means. That is
+# not making it easy -- the model still has to notice the near-duplicate exists and
+# use the one it was told to. It makes the question a test of attention rather than a
+# coin flip, and a benchmark you can only pass by guessing correctly measures luck.
+#
+# The genuinely ambiguous phrasings are in the `ambiguity` category at the bottom.
+# Those have no single right number, so they are graded on whether the answer STATES
+# WHICH COLUMN IT USED. They are reported separately and never folded into the
+# numeric-accuracy score.
+
+dataset: marketing
+
+questions:
+  # ---------------------------------------------------------------- lookup ---
+  - id: mkt-001
+    category: lookup
+    difficulty: easy
+    question: How many campaign rows are in this dataset, and how many columns does it have?
+    reference_sql: |
+      SELECT count(*) AS row_count, 44 AS column_count FROM dataset
+    answer: {kind: facts, tolerance: 0}
+    expected_tools: [inspect_schema]
+    min_tool_calls: 1
+
+  - id: mkt-002
+    category: lookup
+    difficulty: easy
+    question: What is the total ad spend across all campaigns?
+    reference_sql: |
+      SELECT round(sum(spend), 2) AS total_spend FROM dataset
+    answer: {kind: scalar, tolerance: 0.001}
+    expected_tools: [execute_sql]
+    min_tool_calls: 1
+
+  - id: mkt-003
+    category: lookup
+    difficulty: medium
+    question: How many distinct campaigns are there?
+    reference_sql: |
+      SELECT count(DISTINCT campaign_id) AS campaigns FROM dataset
+    answer: {kind: scalar, tolerance: 0}
+    expected_tools: [profile_column, execute_sql]
+    min_tool_calls: 1
+
+  # ----------------------------------------------------------- aggregation ---
+  - id: mkt-004
+    category: aggregation
+    difficulty: medium
+    question: >-
+      Which marketing channel has the highest return on ad spend, calculated as total
+      revenue divided by total spend?
+    reference_sql: |
+      SELECT channel, round(sum(revenue) / sum(spend), 4) AS roas
+      FROM dataset
+      GROUP BY channel
+      ORDER BY roas DESC
+      LIMIT 1
+    answer: {kind: label, tolerance: 0}
+    expected_tools: [execute_sql]
+    min_tool_calls: 1
+
+  - id: mkt-005
+    category: aggregation
+    difficulty: hard
+    # Display has the CHEAPEST clicks and the WORST return. Cheap is not good.
+    question: >-
+      Which channel has the lowest cost per click, and is it also the channel with the
+      best return on ad spend?
+    reference_sql: |
+      SELECT channel,
+             round(sum(spend) / sum(clicks), 4) AS cost_per_click,
+             round(sum(revenue) / sum(spend), 4) AS roas
+      FROM dataset
+      GROUP BY channel
+      ORDER BY cost_per_click ASC
+      LIMIT 1
+    answer: {kind: facts, tolerance: 0.02}
+    must_mention: [display]
+    expected_tools: [execute_sql]
+    min_tool_calls: 1
+
+  - id: mkt-006
+    category: aggregation
+    difficulty: medium
+    question: Rank the channels by click-through rate, from highest to lowest.
+    reference_sql: |
+      SELECT channel, round(sum(clicks) * 1.0 / sum(impressions), 5) AS ctr
+      FROM dataset
+      GROUP BY channel
+      ORDER BY ctr DESC
+    answer: {kind: ranking, top_k: 3, tolerance: 0}
+    expected_tools: [execute_sql]
+    min_tool_calls: 1
+
+  # ------------------------------------------------------------ comparison ---
+  - id: mkt-007
+    category: comparison
+    difficulty: medium
+    # The headline A/B result. Column named explicitly, per the fairness rule.
+    question: >-
+      Compare variant A and variant B on conversion rate, using the `conversions` and
+      `clicks` columns. Which performed better and by how much?
+    reference_sql: |
+      SELECT variant,
+             round(sum(conversions) * 1.0 / sum(clicks), 5) AS conversion_rate,
+             sum(conversions) AS conversions,
+             sum(clicks) AS clicks
+      FROM dataset
+      GROUP BY variant
+      ORDER BY conversion_rate DESC
+    answer: {kind: facts, tolerance: 0.02}
+    must_mention: ["variant b|variant = b|variant_b"]
+    expected_tools: [execute_sql, compare_groups]
+    min_tool_calls: 1
+
+  - id: mkt-008
+    category: comparison
+    difficulty: hard
+    question: >-
+      Compare devices on clicks and on conversion rate, using the `conversions`
+      column. Does the device with the most clicks also convert best?
+    reference_sql: |
+      SELECT device,
+             sum(clicks) AS clicks,
+             round(sum(conversions) * 1.0 / sum(clicks), 5) AS conversion_rate
+      FROM dataset
+      GROUP BY device
+      ORDER BY clicks DESC
+    answer: {kind: facts, tolerance: 0.02}
+    must_mention: [mobile]
+    expected_tools: [execute_sql, compare_groups]
+    min_tool_calls: 1
+
+  - id: mkt-009
+    category: comparison
+    difficulty: medium
+    question: Which audience segment produces the most revenue per unit of spend?
+    reference_sql: |
+      SELECT audience_segment, round(sum(revenue) / sum(spend), 4) AS roas
+      FROM dataset
+      GROUP BY audience_segment
+      ORDER BY roas DESC
+      LIMIT 1
+    answer: {kind: label, tolerance: 0}
+    expected_tools: [execute_sql, compare_groups]
+    min_tool_calls: 1
+
+  # ----------------------------------------------------------------- trend ---
+  - id: mkt-010
+    category: trend
+    difficulty: medium
+    question: Which calendar month had the highest total spend?
+    reference_sql: |
+      SELECT strftime(date, '%Y-%m') AS month, round(sum(spend), 2) AS spend
+      FROM dataset
+      GROUP BY month
+      ORDER BY spend DESC
+      LIMIT 1
+    answer: {kind: facts, tolerance: 0.001}
+    expected_tools: [execute_sql, create_chart]
+    min_tool_calls: 1
+
+  # ------------------------------------------------------------- diagnosis ---
+  - id: mkt-011
+    category: diagnosis
+    difficulty: hard
+    question: >-
+      Display gets a large number of clicks but performs poorly overall. Investigate
+      and explain what is going wrong with it.
+    reference_sql: |
+      SELECT channel,
+             sum(clicks) AS clicks,
+             round(sum(clicks) * 1.0 / sum(impressions), 5) AS ctr,
+             round(sum(conversions) * 1.0 / sum(clicks), 5) AS conversion_rate,
+             round(sum(revenue) / sum(spend), 4) AS roas
+      FROM dataset
+      WHERE channel = 'Display'
+      GROUP BY channel
+    answer: {kind: facts, tolerance: 0.03}
+    must_mention: [roas, conversion]
+    expected_tools: [inspect_schema, execute_sql]
+    min_tool_calls: 2
+
+  - id: mkt-012
+    category: diagnosis
+    difficulty: hard
+    question: >-
+      Is the difference between variant A and variant B large enough to act on?
+      Support the conclusion with the number of clicks and conversions behind each.
+    reference_sql: |
+      SELECT variant,
+             sum(clicks) AS clicks,
+             sum(conversions) AS conversions,
+             round(sum(conversions) * 1.0 / sum(clicks), 5) AS conversion_rate
+      FROM dataset
+      GROUP BY variant
+      ORDER BY variant
+    answer: {kind: facts, tolerance: 0.02}
+    must_mention: ["variant b|variant = b|variant_b", clicks]
+    expected_tools: [execute_sql]
+    min_tool_calls: 2
+
+  # ---------------------------------------------------------- data_quality ---
+  - id: mkt-013
+    category: data_quality
+    difficulty: medium
+    question: Which columns in this dataset have the same value in every row?
+    reference_sql: |
+      SELECT count(DISTINCT account_currency) AS account_currency_distinct,
+             count(DISTINCT data_source) AS data_source_distinct,
+             count(DISTINCT attribution_window) AS attribution_window_distinct
+      FROM dataset
+    answer: {kind: facts, tolerance: 0}
+    must_mention: [account_currency, data_source]
+    expected_tools: [inspect_schema]
+    min_tool_calls: 1
+
+  - id: mkt-014
+    category: data_quality
+    difficulty: medium
+    question: Which column has the most missing values, and what fraction of it is empty?
+    reference_sql: |
+      SELECT round(1 - count(notes) * 1.0 / count(*), 4) AS notes_null_fraction,
+             round(1 - count(legacy_campaign_id) * 1.0 / count(*), 4) AS legacy_null_fraction
+      FROM dataset
+    answer: {kind: facts, tolerance: 0.01}
+    must_mention: [notes]
+    expected_tools: [inspect_schema]
+    min_tool_calls: 1
+
+  - id: mkt-015
+    category: data_quality
+    difficulty: hard
+    # The trap, asked directly. `conv` and `conversions` disagree on ~81% of rows.
+    question: >-
+      This dataset has both a `conversions` column and a `conv` column. Are they the
+      same? Quantify any difference.
+    reference_sql: |
+      SELECT sum(conversions) AS total_conversions,
+             sum(conv) AS total_conv,
+             round(sum(conv) * 1.0 / sum(conversions), 4) AS conv_to_conversions_ratio,
+             count(*) FILTER (WHERE conv <> conversions) AS rows_that_disagree
+      FROM dataset
+    answer: {kind: facts, tolerance: 0.02}
+    must_mention: ["differ|disagree|not the same|lower than|mismatch"]
+    expected_tools: [execute_sql, profile_column]
+    min_tool_calls: 2
+
+  - id: mkt-016
+    category: data_quality
+    difficulty: hard
+    question: >-
+      Compare the `conversion_rate` column with the `cvr` column. Explain the
+      relationship between them.
+    reference_sql: |
+      SELECT round(avg(conversion_rate), 6) AS mean_conversion_rate,
+             round(avg(cvr), 4) AS mean_cvr,
+             round(avg(cvr) / avg(conversion_rate), 2) AS ratio
+      FROM dataset
+    answer: {kind: facts, tolerance: 0.01}
+    must_mention: ["percentage|percent|100x|factor of 100|ratio = 100"]
+    expected_tools: [execute_sql]
+    min_tool_calls: 1
+
+  # ------------------------------------------------------------- ambiguity ---
+  # No single correct number. Graded ONLY on whether the answer says which column it
+  # used. Reported separately from the numeric score.
+  - id: mkt-017
+    category: ambiguity
+    difficulty: hard
+    question: What is the overall conversion rate?
+    reference_sql: |
+      SELECT round(sum(conversions) * 1.0 / sum(clicks), 5) AS rate_from_conversions,
+             round(sum(conv) * 1.0 / sum(clicks), 5) AS rate_from_conv,
+             round(avg(conversion_rate), 5) AS mean_of_conversion_rate,
+             round(avg(cvr), 4) AS mean_of_cvr
+      FROM dataset
+    answer: {kind: assumption_stated, tolerance: 0}
+    must_mention: [conversions]
+    expected_tools: [inspect_schema, execute_sql]
+    min_tool_calls: 2
+
+  - id: mkt-018
+    category: ambiguity
+    difficulty: hard
+    question: What was the cost per click last month?
+    reference_sql: |
+      SELECT strftime(max(date), '%Y-%m') AS latest_month,
+             round(sum(spend) / sum(clicks), 4) AS overall_cost_per_click
+      FROM dataset
+    answer: {kind: assumption_stated, tolerance: 0}
+    must_mention: [month]
+    expected_tools: [inspect_schema, execute_sql]
+    min_tool_calls: 2

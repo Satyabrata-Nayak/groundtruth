@@ -44,6 +44,12 @@ def get_engine() -> Engine:
         pool_size=5,
         max_overflow=5,
         future=True,
+        # Without this, connecting to a host that is up but has nothing listening —
+        # Docker Desktop stopped, container not started — blocks on the OS TCP timeout,
+        # which on Windows is ~21 seconds per attempt and looks exactly like a hang.
+        # The test suite's "skip if Postgres is unavailable" guard depends on failing
+        # fast enough to be a skip rather than a stall.
+        connect_args={"connect_timeout": settings.db_connect_timeout_s},
     )
 
 

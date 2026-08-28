@@ -1,0 +1,215 @@
+# Golden questions for the `sensors` dataset -- hourly readings, 8 sensors, 90 days.
+#
+# WHAT THIS FILE TESTS THAT THE OTHER TWO DO NOT
+# ----------------------------------------------
+# Time. Every hard question here fails if the answer is computed over the whole period
+# instead of over the right window:
+#
+#   "which sensor runs hottest"      avg over 90 days   -> S-05, and misses the fault
+#   "which sensor is faulty"         needs a comparison of late period against early
+#   "when did vibration spike"       needs HOURLY buckets; a daily average hides it
+#   "is any sensor unreliable"       needs a NULL-aware count; row counts are equal
+#
+# The dead-sensor question is the sharpest of these. All eight sensors have exactly
+# 2,160 rows, so any completeness check based on `count(*)` reports a clean dataset.
+# Only `count(temperature_c)` reveals that one sensor stopped measuring.
+
+dataset: sensors
+
+questions:
+  # ---------------------------------------------------------------- lookup ---
+  - id: sens-001
+    category: lookup
+    difficulty: easy
+    question: How many sensor readings are in this dataset?
+    reference_sql: |
+      SELECT count(*) AS readings FROM dataset
+    answer: {kind: scalar, tolerance: 0}
+    expected_tools: [inspect_schema, execute_sql]
+    min_tool_calls: 1
+
+  - id: sens-002
+    category: lookup
+    difficulty: easy
+    question: How many distinct sensors are reporting, and over what date range?
+    reference_sql: |
+      SELECT count(DISTINCT sensor_id) AS sensors,
+             min(reading_time)::DATE AS first_day,
+             max(reading_time)::DATE AS last_day
+      FROM dataset
+    answer: {kind: facts, tolerance: 0}
+    expected_tools: [execute_sql, profile_column]
+    min_tool_calls: 1
+
+  # ----------------------------------------------------------- aggregation ---
+  - id: sens-003
+    category: aggregation
+    difficulty: easy
+    question: Which machine type runs at the highest average temperature?
+    reference_sql: |
+      SELECT machine_type, round(avg(temperature_c), 2) AS avg_temperature
+      FROM dataset
+      GROUP BY machine_type
+      ORDER BY avg_temperature DESC
+      LIMIT 1
+    answer: {kind: label, tolerance: 0}
+    expected_tools: [execute_sql, compare_groups]
+    min_tool_calls: 1
+
+  - id: sens-004
+    category: aggregation
+    difficulty: medium
+    question: How many readings have a status of 'alarm'?
+    reference_sql: |
+      SELECT count(*) AS alarm_readings FROM dataset WHERE status = 'alarm'
+    answer: {kind: scalar, tolerance: 0}
+    expected_tools: [execute_sql, profile_column]
+    min_tool_calls: 1
+
+  # ----------------------------------------------------------------- trend ---
+  - id: sens-005
+    category: trend
+    difficulty: medium
+    # The daily cycle. Needs bucketing by hour-of-day, not by timestamp.
+    question: At what hour of the day is temperature highest on average?
+    reference_sql: |
+      SELECT hour(reading_time) AS hour_of_day,
+             round(avg(temperature_c), 2) AS avg_temperature
+      FROM dataset
+      GROUP BY hour_of_day
+      ORDER BY avg_temperature DESC
+      LIMIT 1
+    answer: {kind: facts, tolerance: 0.01}
+    expected_tools: [execute_sql, create_chart]
+    min_tool_calls: 1
+
+  - id: sens-006
+    category: trend
+    difficulty: hard
+    question: Is vibration different at weekends compared with weekdays? Quantify the difference.
+    reference_sql: |
+      SELECT CASE WHEN dayofweek(reading_time) IN (0, 6) THEN 'weekend' ELSE 'weekday' END
+               AS period,
+             round(avg(vibration_mm_s), 3) AS avg_vibration
+      FROM dataset
+      GROUP BY period
+      ORDER BY avg_vibration DESC
+    answer: {kind: facts, tolerance: 0.02}
+    must_mention: [weekend]
+    expected_tools: [execute_sql]
+    min_tool_calls: 1
+
+  - id: sens-007
+    category: trend
+    difficulty: medium
+    question: Show how average daily temperature changed over the recording period for sensor S-07.
+    reference_sql: |
+      SELECT round(avg(temperature_c) FILTER (WHERE reading_time < TIMESTAMP '2024-05-31'), 2)
+               AS before_drift,
+             round(avg(temperature_c) FILTER (WHERE reading_time >= TIMESTAMP '2024-06-20'), 2)
+               AS final_ten_days
+      FROM dataset
+      WHERE sensor_id = 'S-07'
+    answer: {kind: facts, tolerance: 0.02}
+    expected_tools: [execute_sql, create_chart]
+    min_tool_calls: 1
+
+  # ------------------------------------------------------------- diagnosis ---
+  - id: sens-008
+    category: diagnosis
+    difficulty: hard
+    # THE DILUTION TRAP. Over the whole period S-07 looks normal. It is not.
+    question: >-
+      One sensor has developed a temperature fault during the recording period.
+      Identify which sensor, and when the problem started.
+    reference_sql: |
+      SELECT sensor_id,
+             round(avg(temperature_c) FILTER (WHERE reading_time < TIMESTAMP '2024-05-31'), 2)
+               AS early_period,
+             round(avg(temperature_c) FILTER (WHERE reading_time >= TIMESTAMP '2024-06-20'), 2)
+               AS late_period,
+             round(
+               avg(temperature_c) FILTER (WHERE reading_time >= TIMESTAMP '2024-06-20')
+               - avg(temperature_c) FILTER (WHERE reading_time < TIMESTAMP '2024-05-31'), 2
+             ) AS change
+      FROM dataset
+      GROUP BY sensor_id
+      ORDER BY change DESC NULLS LAST
+      LIMIT 1
+    answer: {kind: facts, tolerance: 0.05}
+    must_mention: ["s-07"]
+    expected_tools: [inspect_schema, execute_sql]
+    min_tool_calls: 3
+
+  - id: sens-009
+    category: diagnosis
+    difficulty: hard
+    question: >-
+      There was an unusual vibration event during the period. Find which sensor it
+      affected, on which day, and how large it was compared with normal.
+    reference_sql: |
+      SELECT sensor_id,
+             reading_time::DATE AS event_day,
+             round(max(vibration_mm_s), 3) AS peak_vibration
+      FROM dataset
+      GROUP BY sensor_id, event_day
+      ORDER BY peak_vibration DESC
+      LIMIT 1
+    answer: {kind: facts, tolerance: 0.02}
+    must_mention: ["s-03"]
+    expected_tools: [execute_sql, create_chart]
+    min_tool_calls: 2
+
+  - id: sens-010
+    category: diagnosis
+    difficulty: hard
+    question: >-
+      Which sensor runs hottest? Check whether the answer is the same across the whole
+      period as it is in the final two weeks.
+    reference_sql: |
+      SELECT
+        (SELECT sensor_id FROM dataset
+          GROUP BY sensor_id ORDER BY avg(temperature_c) DESC NULLS LAST LIMIT 1)
+          AS hottest_all_period,
+        (SELECT sensor_id FROM dataset
+          WHERE reading_time >= TIMESTAMP '2024-06-16'
+          GROUP BY sensor_id ORDER BY avg(temperature_c) DESC NULLS LAST LIMIT 1)
+          AS hottest_final_two_weeks
+    answer: {kind: facts, tolerance: 0}
+    must_mention: ["s-07"]
+    expected_tools: [execute_sql]
+    min_tool_calls: 2
+
+  # ---------------------------------------------------------- data_quality ---
+  - id: sens-011
+    category: data_quality
+    difficulty: hard
+    # Row counts are identical across sensors. Only a null-aware count finds this.
+    question: >-
+      Is every sensor reporting reliably for the whole period? Check for missing
+      measurements.
+    reference_sql: |
+      SELECT sensor_id,
+             count(*) AS rows,
+             count(temperature_c) AS readings_with_temperature,
+             round(1 - count(temperature_c) * 1.0 / count(*), 4) AS missing_fraction
+      FROM dataset
+      GROUP BY sensor_id
+      ORDER BY missing_fraction DESC
+      LIMIT 1
+    answer: {kind: facts, tolerance: 0.01}
+    must_mention: ["s-02"]
+    expected_tools: [inspect_schema, execute_sql]
+    min_tool_calls: 2
+
+  - id: sens-012
+    category: data_quality
+    difficulty: medium
+    question: On what date did sensor S-02 stop recording measurements?
+    reference_sql: |
+      SELECT max(reading_time)::DATE AS last_reading_day
+      FROM dataset
+      WHERE sensor_id = 'S-02' AND temperature_c IS NOT NULL
+    answer: {kind: facts, tolerance: 0}
+    expected_tools: [execute_sql]
+    min_tool_calls: 1

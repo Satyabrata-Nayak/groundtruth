@@ -448,3 +448,209 @@ Deletion runs in the opposite order for the same reason: database first, then fi
 **Tradeoffs.** A hard process kill between the file write and the commit still leaves an
 orphan. A future sweeper can reconcile directories against the database; not worth
 building until it happens.
+
+---
+
+## D-015 — One general tool plus five guard rails, not a catalogue of canned analyses
+
+**Decision.** The registry holds six tools. `execute_sql` accepts any read-only SELECT;
+`inspect_schema`, `profile_column`, `compare_groups`, `correlation` and `create_chart`
+exist only where they enforce something SQL cannot.
+
+**Why.** The obvious objection to a fixed tool set is that it caps what the agent can
+analyse. It does not, because one of the tools is general:
+
+```
+arbitrary Python   unbounded    cannot be validated without running it
+arbitrary SQL      large        parses to an AST we can allowlist, on a
+                                connection with the filesystem switched off
+canned analyses    tiny         safe, and useless for real questions
+```
+
+Anything expressible in SQL — window functions, CTEs, self-joins, cohorts, percentiles
+— is reachable. The other five do not add power; they add refusals that arrive *before*
+execution, in language a model can act on:
+
+| tool | what it enforces that SQL does not |
+|---|---|
+| `compare_groups` | metric must be numeric; grouping column must not be an identifier; returns row counts and shares beside each aggregate |
+| `correlation` | both columns numeric; reports Pearson **and** Spearman, so a curved relationship is not read as "no relationship" |
+| `create_chart` | axis types match the chart type; category count is readable; returns a spec, never pixels |
+| `inspect_schema` / `profile_column` | one call for what a model would otherwise infer by eyeballing sample rows |
+
+The genuine ceiling is what SQL cannot express — regression, clustering, time-series
+decomposition. Those arrive in M6 with SciPy and scikit-learn, as more tools.
+
+**Tradeoffs.** Six entries in every prompt. Selection accuracy on small models degrades
+as the list grows, which is why `detect_anomalies` waits for M6 rather than being added
+speculatively, and why `ToolRegistry.specs(only=[...])` can narrow the list per run.
+
+---
+
+## D-016 — The model supplies a column *name*; the SQL gets the *canonical* name
+
+**Decision.** Every tool that accepts a column name resolves it against the live schema
+before use. The model's string is never interpolated into SQL.
+
+**Why.** `execute_sql` is safe because the whole statement passes the sandbox's AST
+allowlist. `compare_groups(group_column="...")` is different: it *assembles* SQL, and
+string assembly plus untrusted input is the shape of every SQL injection ever written.
+
+Quoting is not the defence. Substitution is:
+
+```
+model says  "Reveune"
+                |
+                v  resolve_column  -- looked up in the REAL schema
+                |
+SQL gets    "revenue"      <- the canonical name from DuckDB, not the model's text
+```
+
+A name that matches nothing never reaches SQL at all; it becomes a `ToolError` naming
+the columns that do exist. Quoting is still applied, because a real column name can
+contain a space or a quote — but by then the value is ours.
+
+Matching is case-insensitive on purpose. Small models get casing wrong constantly
+("Revenue" for `revenue`), and since the *canonical* name is what proceeds, accepting a
+case variant costs nothing in safety and removes a whole class of pointless failure.
+
+**Tradeoffs.** One extra schema read per tool call (~1 ms, shared across arguments
+within a call).
+
+---
+
+## D-017 — A failed tool call is a value, not an exception
+
+**Decision.** `ToolRegistry.call()` never raises. Every failure returns a `ToolResult`
+with `ok=False` and a message written to be read by a model.
+
+**Why.** In M5 the agent loop must be able to hand the model back:
+
+```
+column 'reveune' does not exist. Did you mean: revenue?
+Available columns: order_id, order_date, region, category, revenue, cost, units
+```
+
+…and let it try again. An exception aborts the run; a result object is a repair prompt.
+This is why the error messages name the valid alternatives rather than only stating
+what was wrong — the message *is* the interface.
+
+Three failure kinds stay distinct, because collapsing them is how an agent ends up
+retrying a call that can never work:
+
+```
+unknown tool      -> the agent is not working from the action space it was given
+bad arguments     -> a repairable slip
+runtime failure   -> either repairable (ToolError) or a bug in us (anything else)
+```
+
+**Tradeoffs.** Callers must check `.ok` rather than relying on exceptions to propagate.
+Enforced by the shape: `ToolResult` carries no data when `ok` is false.
+
+---
+
+## D-018 — The evaluation set is built *before* the agent, and its expected values are computed, never typed
+
+**Decision.** M3 ships 50 golden questions across three datasets. Each carries reference
+SQL; the expected values are produced by executing that SQL and checked into
+`eval/answers/*.json`.
+
+**Why.** Two separate arguments.
+
+*Order.* In M1, five of six apparent "model failures" were bugs in the measuring
+harness. Built after the agent, every one of them would have presented as "the agent is
+broken", and the fix would have been prompt-tuning against a broken ruler.
+
+*Derivation.* A benchmark with hand-entered answers has two sources of truth that drift
+apart silently — someone tunes a generator, the data moves, and forty constants keep
+asserting what used to be true. Here the reference SQL is the only authored artefact.
+`python -m eval.build --check` recomputes and exits non-zero if anything moved, so a
+generator change surfaces as a reviewable diff of exactly which answers changed.
+
+Reference SQL runs through the **same sandbox** the agent uses, so a question answerable
+only outside the sandbox fails at build time rather than producing a score nobody can
+reach.
+
+**Tradeoffs.** Requires Postgres to build (the datasets are registered first). Once
+built, the answers are read from JSON and need nothing.
+
+---
+
+## D-019 — Evaluation datasets are generated from seeded code, not downloaded
+
+**Decision.** Three datasets — `ecommerce` (clean), `marketing` (44 columns, messy),
+`sensors` (hourly time series) — built by committed generators with fixed seeds. The
+CSVs are gitignored; the generators are not.
+
+**Why.** A benchmark question needs an answer that exists independently of the query
+used to find it. For a downloaded CSV, "correct" is whatever the reference SQL returns,
+which makes the reference SQL both question and answer and tests nothing.
+
+Generating inverts that: the effect is decided first ("Q3 profit falls while revenue
+rises"), the data is built to contain it, and `planted_effects` records what a competent
+analyst should be able to find. The generator being committed matters as much as the
+data:
+
+```
+a committed CSV        opaque    "why is West's margin low?" — nobody knows
+a committed generator  legible   the parameter that made it low is on line 79
+```
+
+Three datasets rather than one, because a single shape tests a single skill. Clean data
+tests diagnosis; a 44-column table with duplicated metrics and mixed units tests reading
+a schema carefully; hourly readings test reasoning over time.
+
+**Tradeoffs.** Synthetic data cannot surprise you the way real data does — this measures
+regression, not generality. Held-out real datasets are an M6 item, and the two are kept
+distinct rather than conflated.
+
+---
+
+## D-020 — The scoreboard ships with three stub agents that calibrate its own scale
+
+**Decision.** `eval/agents.py` provides `oracle`, `refusing` and `schema-only`, and they
+are run before any real agent exists.
+
+**Why.** A benchmark reporting 62% means nothing unless the instrument is known to read
+100% for a perfect answer and 0% for a worthless one. Measured:
+
+| stub | accuracy | values | what it proves |
+|---|---|---|---|
+| `oracle` | 100% | 100% | the grader's ceiling is reachable |
+| `refusing` | 0% | 0% | saying nothing earns nothing |
+| `schema-only` | 0% | 0% | **sounding right earns nothing** |
+
+The third is the important one. It inspects the schema and writes a fluent, confident
+answer containing no computed number — the most realistic failure mode of a weak agent.
+It scores zero on values, and that is the property that makes the benchmark worth
+running.
+
+Building the oracle immediately found five grader bugs, all wording brittleness
+(`shipping_cost` vs `null_shipping`, `variant b` vs `variant = B`), and one real regex
+bug: the number extractor could not match `Q3`, because its lookbehind rejected any
+digit preceded by a letter.
+
+**Tradeoffs.** The `ambiguity` category has **no verified ceiling** — its check ("did the
+answer say which column it used") needs narrative behaviour that no table-dumping stub
+produces, so the oracle scores 0/2 there. Those questions are excluded from headline
+accuracy, and this is stated rather than hidden.
+
+---
+
+## D-021 — Chart tools return a validated spec; the model sees a summary of it
+
+**Decision.** `create_chart` returns a chart specification plus its data. The caller
+receives every point; the model receives at most twelve, via `Tool.model_view`.
+
+**Why.** Two audiences with opposite needs. The browser must have all the data to draw
+the chart; the model needs to know a chart was made and what it shows. Measured on a
+400-point scatter plot: **11,325 characters → 776**, roughly 3,000 tokens of context
+recovered per chart, for numbers the model computed itself in order to request it.
+
+Returning a spec rather than a rendered image is what makes this possible at all, and it
+also removes `kaleido` and a headless Chromium from the dependency list. Validation
+targets *plausible nonsense* rather than crashes: a line chart on an unordered category,
+4,000 bars, a scatter plot of text — all render fine and mean nothing.
+
+**Tradeoffs.** `model_view` is a second payload shape for any tool that overrides it.
+Only `create_chart` does, and `ToolResult.model_data` stays `None` everywhere else.

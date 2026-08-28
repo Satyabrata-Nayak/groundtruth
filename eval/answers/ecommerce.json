@@ -1,0 +1,561 @@
+{
+  "ecom-001": {
+    "columns": [
+      "order_count"
+    ],
+    "facts": {
+      "order_count": 5000
+    },
+    "labels": [
+      "5000"
+    ],
+    "question_id": "ecom-001",
+    "rows": [
+      [
+        5000
+      ]
+    ],
+    "scalar": 5000
+  },
+  "ecom-002": {
+    "columns": [
+      "total_revenue"
+    ],
+    "facts": {
+      "total_revenue": 2501150.87
+    },
+    "labels": [
+      "2501150.87"
+    ],
+    "question_id": "ecom-002",
+    "rows": [
+      [
+        2501150.87
+      ]
+    ],
+    "scalar": 2501150.87
+  },
+  "ecom-003": {
+    "columns": [
+      "customers"
+    ],
+    "facts": {
+      "customers": 1185
+    },
+    "labels": [
+      "1185"
+    ],
+    "question_id": "ecom-003",
+    "rows": [
+      [
+        1185
+      ]
+    ],
+    "scalar": 1185
+  },
+  "ecom-004": {
+    "columns": [
+      "category",
+      "revenue"
+    ],
+    "facts": {
+      "category": "Electronics",
+      "revenue": 1496497.45
+    },
+    "labels": [
+      "Electronics"
+    ],
+    "question_id": "ecom-004",
+    "rows": [
+      [
+        "Electronics",
+        1496497.45
+      ]
+    ],
+    "scalar": null
+  },
+  "ecom-005": {
+    "columns": [
+      "category",
+      "margin"
+    ],
+    "facts": {
+      "category": "Books",
+      "margin": 0.4045
+    },
+    "labels": [
+      "Books"
+    ],
+    "question_id": "ecom-005",
+    "rows": [
+      [
+        "Books",
+        0.4045
+      ]
+    ],
+    "scalar": null
+  },
+  "ecom-005b": {
+    "columns": [
+      "category",
+      "margin"
+    ],
+    "facts": {
+      "category": "Electronics",
+      "margin": 0.0128
+    },
+    "labels": [
+      "Electronics"
+    ],
+    "question_id": "ecom-005b",
+    "rows": [
+      [
+        "Electronics",
+        0.0128
+      ]
+    ],
+    "scalar": null
+  },
+  "ecom-006": {
+    "columns": [
+      "region",
+      "revenue"
+    ],
+    "facts": {
+      "region": "West",
+      "revenue": 891913.42
+    },
+    "labels": [
+      "West"
+    ],
+    "question_id": "ecom-006",
+    "rows": [
+      [
+        "West",
+        891913.42
+      ]
+    ],
+    "scalar": null
+  },
+  "ecom-007": {
+    "columns": [
+      "region",
+      "margin"
+    ],
+    "facts": {
+      "margin": 0.1679,
+      "region": "East"
+    },
+    "labels": [
+      "East"
+    ],
+    "question_id": "ecom-007",
+    "rows": [
+      [
+        "East",
+        0.1679
+      ]
+    ],
+    "scalar": null
+  },
+  "ecom-008": {
+    "columns": [
+      "channel",
+      "margin"
+    ],
+    "facts": {
+      "channel": [
+        "Partner",
+        "Online",
+        "Retail"
+      ],
+      "margin": [
+        0.2313,
+        0.1067,
+        0.0982
+      ]
+    },
+    "labels": [
+      "Partner",
+      "Online",
+      "Retail"
+    ],
+    "question_id": "ecom-008",
+    "rows": [
+      [
+        "Partner",
+        0.2313
+      ],
+      [
+        "Online",
+        0.1067
+      ],
+      [
+        "Retail",
+        0.0982
+      ]
+    ],
+    "scalar": null
+  },
+  "ecom-009": {
+    "columns": [
+      "category",
+      "return_rate"
+    ],
+    "facts": {
+      "category": "Apparel",
+      "return_rate": 0.1531
+    },
+    "labels": [
+      "Apparel"
+    ],
+    "question_id": "ecom-009",
+    "rows": [
+      [
+        "Apparel",
+        0.1531
+      ]
+    ],
+    "scalar": null
+  },
+  "ecom-010": {
+    "columns": [
+      "vip_aov",
+      "new_aov",
+      "ratio"
+    ],
+    "facts": {
+      "new_aov": 376.69,
+      "ratio": 2.587,
+      "vip_aov": 974.33
+    },
+    "labels": [
+      "974.33"
+    ],
+    "question_id": "ecom-010",
+    "rows": [
+      [
+        974.33,
+        376.69,
+        2.587
+      ]
+    ],
+    "scalar": null
+  },
+  "ecom-011": {
+    "columns": [
+      "region",
+      "revenue",
+      "margin"
+    ],
+    "facts": {
+      "margin": [
+        0.0491,
+        0.1564,
+        0.1473,
+        0.1679
+      ],
+      "region": [
+        "West",
+        "North",
+        "South",
+        "East"
+      ],
+      "revenue": [
+        891913.42,
+        592960.43,
+        525450.98,
+        490826.04
+      ]
+    },
+    "labels": [
+      "West",
+      "North",
+      "South",
+      "East"
+    ],
+    "question_id": "ecom-011",
+    "rows": [
+      [
+        "West",
+        891913.42,
+        0.0491
+      ],
+      [
+        "North",
+        592960.43,
+        0.1564
+      ],
+      [
+        "South",
+        525450.98,
+        0.1473
+      ],
+      [
+        "East",
+        490826.04,
+        0.1679
+      ]
+    ],
+    "scalar": null
+  },
+  "ecom-012": {
+    "columns": [
+      "channel",
+      "revenue",
+      "margin"
+    ],
+    "facts": {
+      "channel": "Partner",
+      "margin": 0.2313,
+      "revenue": 289332.93
+    },
+    "labels": [
+      "Partner"
+    ],
+    "question_id": "ecom-012",
+    "rows": [
+      [
+        "Partner",
+        289332.93,
+        0.2313
+      ]
+    ],
+    "scalar": null
+  },
+  "ecom-013": {
+    "columns": [
+      "quarter",
+      "revenue"
+    ],
+    "facts": {
+      "quarter": [
+        3,
+        4,
+        2,
+        1
+      ],
+      "revenue": [
+        793071.25,
+        576926.03,
+        576382.88,
+        554770.71
+      ]
+    },
+    "labels": [
+      "3",
+      "4",
+      "2",
+      "1"
+    ],
+    "question_id": "ecom-013",
+    "rows": [
+      [
+        3,
+        793071.25
+      ],
+      [
+        4,
+        576926.03
+      ],
+      [
+        2,
+        576382.88
+      ],
+      [
+        1,
+        554770.71
+      ]
+    ],
+    "scalar": null
+  },
+  "ecom-014": {
+    "columns": [
+      "quarter",
+      "revenue",
+      "profit"
+    ],
+    "facts": {
+      "profit": [
+        96963.57,
+        20259.27
+      ],
+      "quarter": [
+        2,
+        3
+      ],
+      "revenue": [
+        576382.88,
+        793071.25
+      ]
+    },
+    "labels": [
+      "2",
+      "3"
+    ],
+    "question_id": "ecom-014",
+    "rows": [
+      [
+        2,
+        576382.88,
+        96963.57
+      ],
+      [
+        3,
+        793071.25,
+        20259.27
+      ]
+    ],
+    "scalar": null
+  },
+  "ecom-015": {
+    "columns": [
+      "quarter",
+      "revenue",
+      "profit",
+      "margin",
+      "avg_discount",
+      "electronics_share"
+    ],
+    "facts": {
+      "avg_discount": [
+        0.0546,
+        0.1408
+      ],
+      "electronics_share": [
+        0.1886,
+        0.4296
+      ],
+      "margin": [
+        0.1682,
+        0.0255
+      ],
+      "profit": [
+        96963.57,
+        20259.27
+      ],
+      "quarter": [
+        2,
+        3
+      ],
+      "revenue": [
+        576382.88,
+        793071.25
+      ]
+    },
+    "labels": [
+      "2",
+      "3"
+    ],
+    "question_id": "ecom-015",
+    "rows": [
+      [
+        2,
+        576382.88,
+        96963.57,
+        0.1682,
+        0.0546,
+        0.1886
+      ],
+      [
+        3,
+        793071.25,
+        20259.27,
+        0.0255,
+        0.1408,
+        0.4296
+      ]
+    ],
+    "scalar": null
+  },
+  "ecom-016": {
+    "columns": [
+      "category",
+      "q3_vs_q2_order_ratio",
+      "overall_margin"
+    ],
+    "facts": {
+      "category": "Electronics",
+      "overall_margin": -0.0075,
+      "q3_vs_q2_order_ratio": 2.272
+    },
+    "labels": [
+      "Electronics"
+    ],
+    "question_id": "ecom-016",
+    "rows": [
+      [
+        "Electronics",
+        2.272,
+        -0.0075
+      ]
+    ],
+    "scalar": null
+  },
+  "ecom-017": {
+    "columns": [
+      "quarter",
+      "avg_discount",
+      "profit"
+    ],
+    "facts": {
+      "avg_discount": 0.1408,
+      "profit": 20259.27,
+      "quarter": 3
+    },
+    "labels": [
+      "3"
+    ],
+    "question_id": "ecom-017",
+    "rows": [
+      [
+        3,
+        0.1408,
+        20259.27
+      ]
+    ],
+    "scalar": null
+  },
+  "ecom-018": {
+    "columns": [
+      "missing_shipping_cost"
+    ],
+    "facts": {
+      "missing_shipping_cost": 96
+    },
+    "labels": [
+      "96"
+    ],
+    "question_id": "ecom-018",
+    "rows": [
+      [
+        96
+      ]
+    ],
+    "scalar": 96
+  },
+  "ecom-019": {
+    "columns": [
+      "total_rows",
+      "null_shipping",
+      "null_fraction"
+    ],
+    "facts": {
+      "null_fraction": 0.0192,
+      "null_shipping": 96,
+      "total_rows": 5000
+    },
+    "labels": [
+      "5000"
+    ],
+    "question_id": "ecom-019",
+    "rows": [
+      [
+        5000,
+        96,
+        0.0192
+      ]
+    ],
+    "scalar": null
+  }
+}

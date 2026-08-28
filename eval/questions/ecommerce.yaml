@@ -1,0 +1,341 @@
+# Golden questions for the `ecommerce` dataset.
+#
+# Every question carries the SQL that answers it. The expected VALUES are never typed
+# here -- they are produced by running this SQL (see `eval/expected.py`), so a change
+# to the generator can never leave a stale number behind claiming to be ground truth.
+#
+# FIELDS
+#   category        lookup | aggregation | comparison | trend | diagnosis |
+#                   data_quality | ambiguity
+#   answer.kind     scalar  -- one number; graded within `tolerance` (relative)
+#                   label   -- one name that must appear in the answer
+#                   ranking -- the first `top_k` labels, in order
+#                   facts   -- several named values, each of which must appear
+#   must_mention    concepts a correct explanation has to name. Used for diagnosis,
+#                   where a right number with no cause is not a right answer.
+#   min_tool_calls  the shortest honest path. Fewer means the model guessed.
+#
+# NOTE ON DIFFICULTY: the `lookup` questions exist to catch harness breakage, not to
+# measure the model -- M1 already showed single-turn SQL is a solved problem for
+# qwen3:4b. If those fail, something is broken in the runner, not the model.
+
+dataset: ecommerce
+
+questions:
+  # ---------------------------------------------------------------- lookup ---
+  - id: ecom-001
+    category: lookup
+    difficulty: easy
+    question: How many orders are in this dataset?
+    reference_sql: |
+      SELECT count(*) AS order_count FROM dataset
+    answer: {kind: scalar, tolerance: 0}
+    expected_tools: [inspect_schema, execute_sql]
+    min_tool_calls: 1
+
+  - id: ecom-002
+    category: lookup
+    difficulty: easy
+    question: What is the total revenue across all orders?
+    reference_sql: |
+      SELECT round(sum(revenue), 2) AS total_revenue FROM dataset
+    answer: {kind: scalar, tolerance: 0.001}
+    expected_tools: [execute_sql]
+    min_tool_calls: 1
+
+  - id: ecom-003
+    category: lookup
+    difficulty: easy
+    question: How many distinct customers placed orders?
+    reference_sql: |
+      SELECT count(DISTINCT customer_id) AS customers FROM dataset
+    answer: {kind: scalar, tolerance: 0}
+    expected_tools: [execute_sql, profile_column]
+    min_tool_calls: 1
+
+  # ----------------------------------------------------------- aggregation ---
+  - id: ecom-004
+    category: aggregation
+    difficulty: easy
+    question: Which product category generated the most revenue?
+    reference_sql: |
+      SELECT category, round(sum(revenue), 2) AS revenue
+      FROM dataset
+      GROUP BY category
+      ORDER BY revenue DESC
+      LIMIT 1
+    answer: {kind: label, tolerance: 0}
+    expected_tools: [execute_sql, compare_groups]
+    min_tool_calls: 1
+
+  - id: ecom-005
+    category: aggregation
+    difficulty: medium
+    # THE TRAP: Electronics leads on revenue (ecom-004) and is LAST on margin, so the
+    # answer here is Books. A model that carries its previous answer forward is wrong.
+    #
+    # The first version of this question asked for the LOWEST margin, which is also
+    # Electronics -- the same answer as ecom-004, making the "trap" score correct for
+    # repeating yourself. Asking for the highest is what actually separates the two.
+    question: Which product category has the highest profit margin?
+    reference_sql: |
+      SELECT category,
+             round(sum(revenue - cost) / sum(revenue), 4) AS margin
+      FROM dataset
+      GROUP BY category
+      ORDER BY margin DESC
+      LIMIT 1
+    answer: {kind: label, tolerance: 0}
+    expected_tools: [execute_sql]
+    min_tool_calls: 1
+
+  - id: ecom-005b
+    category: aggregation
+    difficulty: medium
+    question: Which product category has the lowest profit margin?
+    reference_sql: |
+      SELECT category,
+             round(sum(revenue - cost) / sum(revenue), 4) AS margin
+      FROM dataset
+      GROUP BY category
+      ORDER BY margin ASC
+      LIMIT 1
+    answer: {kind: label, tolerance: 0}
+    expected_tools: [execute_sql]
+    min_tool_calls: 1
+
+  - id: ecom-006
+    category: aggregation
+    difficulty: easy
+    question: Which region has the highest total revenue?
+    reference_sql: |
+      SELECT region, round(sum(revenue), 2) AS revenue
+      FROM dataset
+      GROUP BY region
+      ORDER BY revenue DESC
+      LIMIT 1
+    answer: {kind: label, tolerance: 0}
+    expected_tools: [execute_sql, compare_groups]
+    min_tool_calls: 1
+
+  - id: ecom-007
+    category: aggregation
+    difficulty: medium
+    # Deliberately the same shape as ecom-006 with a different answer.
+    question: Which region has the highest profit margin?
+    reference_sql: |
+      SELECT region,
+             round(sum(revenue - cost) / sum(revenue), 4) AS margin
+      FROM dataset
+      GROUP BY region
+      ORDER BY margin DESC
+      LIMIT 1
+    answer: {kind: label, tolerance: 0}
+    expected_tools: [execute_sql]
+    min_tool_calls: 1
+
+  - id: ecom-008
+    category: aggregation
+    difficulty: medium
+    question: Rank the sales channels from highest to lowest profit margin.
+    reference_sql: |
+      SELECT channel,
+             round(sum(revenue - cost) / sum(revenue), 4) AS margin
+      FROM dataset
+      GROUP BY channel
+      ORDER BY margin DESC
+    answer: {kind: ranking, top_k: 3, tolerance: 0}
+    expected_tools: [execute_sql]
+    min_tool_calls: 1
+
+  - id: ecom-009
+    category: aggregation
+    difficulty: medium
+    question: Which product category is returned most often, and what share of its orders are returned?
+    reference_sql: |
+      SELECT category,
+             round(avg(CASE WHEN returned THEN 1.0 ELSE 0.0 END), 4) AS return_rate
+      FROM dataset
+      GROUP BY category
+      ORDER BY return_rate DESC
+      LIMIT 1
+    answer: {kind: facts, tolerance: 0.02}
+    expected_tools: [execute_sql]
+    min_tool_calls: 1
+
+  # ------------------------------------------------------------ comparison ---
+  - id: ecom-010
+    category: comparison
+    difficulty: medium
+    question: Compare the average order value of VIP customers against New customers. How many times larger is it?
+    reference_sql: |
+      SELECT round(avg(revenue) FILTER (WHERE customer_segment = 'VIP'), 2) AS vip_aov,
+             round(avg(revenue) FILTER (WHERE customer_segment = 'New'), 2) AS new_aov,
+             round(
+               avg(revenue) FILTER (WHERE customer_segment = 'VIP')
+               / avg(revenue) FILTER (WHERE customer_segment = 'New'), 3
+             ) AS ratio
+      FROM dataset
+    answer: {kind: facts, tolerance: 0.02}
+    expected_tools: [execute_sql, compare_groups]
+    min_tool_calls: 1
+
+  - id: ecom-011
+    category: comparison
+    difficulty: hard
+    # West wins on one measure and loses on the other. The point of the question is
+    # whether the answer reports BOTH rather than picking the flattering one.
+    question: Is West the best-performing region? Justify the answer using both revenue and profitability.
+    reference_sql: |
+      SELECT region,
+             round(sum(revenue), 2) AS revenue,
+             round(sum(revenue - cost) / sum(revenue), 4) AS margin
+      FROM dataset
+      GROUP BY region
+      ORDER BY revenue DESC
+    answer: {kind: facts, tolerance: 0.02}
+    must_mention: [west, margin]
+    expected_tools: [execute_sql, compare_groups]
+    min_tool_calls: 2
+
+  - id: ecom-012
+    category: comparison
+    difficulty: medium
+    question: Which sales channel has the smallest revenue but the highest profit margin?
+    reference_sql: |
+      SELECT channel,
+             round(sum(revenue), 2) AS revenue,
+             round(sum(revenue - cost) / sum(revenue), 4) AS margin
+      FROM dataset
+      GROUP BY channel
+      ORDER BY revenue ASC
+      LIMIT 1
+    answer: {kind: facts, tolerance: 0.02}
+    expected_tools: [execute_sql]
+    min_tool_calls: 1
+
+  # ----------------------------------------------------------------- trend ---
+  - id: ecom-013
+    category: trend
+    difficulty: medium
+    question: How did quarterly revenue change over 2024? Which quarter was highest?
+    reference_sql: |
+      SELECT quarter(order_date) AS quarter,
+             round(sum(revenue), 2) AS revenue
+      FROM dataset
+      GROUP BY quarter
+      ORDER BY revenue DESC
+    answer: {kind: ranking, top_k: 2, tolerance: 0}
+    expected_tools: [execute_sql, create_chart]
+    min_tool_calls: 1
+
+  - id: ecom-014
+    category: trend
+    difficulty: hard
+    question: Compare Q2 and Q3 on revenue and on profit. Did they move in the same direction?
+    reference_sql: |
+      SELECT quarter(order_date) AS quarter,
+             round(sum(revenue), 2) AS revenue,
+             round(sum(revenue - cost), 2) AS profit
+      FROM dataset
+      WHERE quarter(order_date) IN (2, 3)
+      GROUP BY quarter
+      ORDER BY quarter
+    answer: {kind: facts, tolerance: 0.01}
+    must_mention: [revenue, profit]
+    expected_tools: [execute_sql]
+    min_tool_calls: 1
+
+  # ------------------------------------------------------------- diagnosis ---
+  - id: ecom-015
+    category: diagnosis
+    difficulty: hard
+    # THE FLAGSHIP QUESTION. Not answerable in one query: the premise has to be
+    # confirmed, then decomposed. Both causes must be named.
+    question: >-
+      In Q3 revenue went up but profit went down. Investigate why, and explain what
+      drove the change.
+    reference_sql: |
+      SELECT quarter(order_date) AS quarter,
+             round(sum(revenue), 2) AS revenue,
+             round(sum(revenue - cost), 2) AS profit,
+             round(sum(revenue - cost) / sum(revenue), 4) AS margin,
+             round(avg(discount_pct), 4) AS avg_discount,
+             round(
+               count(*) FILTER (WHERE category = 'Electronics') * 1.0 / count(*), 4
+             ) AS electronics_share
+      FROM dataset
+      WHERE quarter(order_date) IN (2, 3)
+      GROUP BY quarter
+      ORDER BY quarter
+    answer: {kind: facts, tolerance: 0.03}
+    must_mention: [discount, electronics]
+    expected_tools: [inspect_schema, execute_sql]
+    min_tool_calls: 3
+
+  - id: ecom-016
+    category: diagnosis
+    difficulty: hard
+    question: Which product category was most responsible for the Q3 margin decline, and why?
+    reference_sql: |
+      SELECT category,
+             round(
+               count(*) FILTER (WHERE quarter(order_date) = 3) * 1.0
+               / nullif(count(*) FILTER (WHERE quarter(order_date) = 2), 0), 3
+             ) AS q3_vs_q2_order_ratio,
+             round(sum(revenue - cost) / sum(revenue), 4) AS overall_margin
+      FROM dataset
+      WHERE quarter(order_date) IN (2, 3)
+      GROUP BY category
+      ORDER BY q3_vs_q2_order_ratio DESC
+      LIMIT 1
+    answer: {kind: facts, tolerance: 0.05}
+    must_mention: [electronics, margin]
+    expected_tools: [execute_sql]
+    min_tool_calls: 2
+
+  - id: ecom-017
+    category: diagnosis
+    difficulty: hard
+    question: >-
+      Discounting rose sharply in one quarter. Find which quarter, and quantify how
+      much of the profit fall it could explain.
+    reference_sql: |
+      SELECT quarter(order_date) AS quarter,
+             round(avg(discount_pct), 4) AS avg_discount,
+             round(sum(revenue - cost), 2) AS profit
+      FROM dataset
+      GROUP BY quarter
+      ORDER BY avg_discount DESC
+      LIMIT 1
+    answer: {kind: facts, tolerance: 0.02}
+    must_mention: [discount]
+    expected_tools: [execute_sql]
+    min_tool_calls: 2
+
+  # ---------------------------------------------------------- data_quality ---
+  - id: ecom-018
+    category: data_quality
+    difficulty: easy
+    question: How many orders are missing a shipping cost?
+    reference_sql: |
+      SELECT count(*) - count(shipping_cost) AS missing_shipping_cost FROM dataset
+    answer: {kind: scalar, tolerance: 0}
+    expected_tools: [inspect_schema, profile_column, execute_sql]
+    min_tool_calls: 1
+
+  - id: ecom-019
+    category: data_quality
+    difficulty: medium
+    question: >-
+      Are there any data quality problems in this dataset that would affect an
+      analysis of shipping costs?
+    reference_sql: |
+      SELECT count(*) AS total_rows,
+             count(*) - count(shipping_cost) AS null_shipping,
+             round((count(*) - count(shipping_cost)) * 1.0 / count(*), 4) AS null_fraction
+      FROM dataset
+    answer: {kind: facts, tolerance: 0.01}
+    must_mention: ["shipping_cost|shipping cost|shipping"]
+    expected_tools: [inspect_schema, profile_column]
+    min_tool_calls: 1

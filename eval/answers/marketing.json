@@ -1,0 +1,513 @@
+{
+  "mkt-001": {
+    "columns": [
+      "row_count",
+      "column_count"
+    ],
+    "facts": {
+      "column_count": 44,
+      "row_count": 6000
+    },
+    "labels": [
+      "6000"
+    ],
+    "question_id": "mkt-001",
+    "rows": [
+      [
+        6000,
+        44
+      ]
+    ],
+    "scalar": null
+  },
+  "mkt-002": {
+    "columns": [
+      "total_spend"
+    ],
+    "facts": {
+      "total_spend": 6873973.56
+    },
+    "labels": [
+      "6873973.56"
+    ],
+    "question_id": "mkt-002",
+    "rows": [
+      [
+        6873973.56
+      ]
+    ],
+    "scalar": 6873973.56
+  },
+  "mkt-003": {
+    "columns": [
+      "campaigns"
+    ],
+    "facts": {
+      "campaigns": 40
+    },
+    "labels": [
+      "40"
+    ],
+    "question_id": "mkt-003",
+    "rows": [
+      [
+        40
+      ]
+    ],
+    "scalar": 40
+  },
+  "mkt-004": {
+    "columns": [
+      "channel",
+      "roas"
+    ],
+    "facts": {
+      "channel": "Email",
+      "roas": 6.0538
+    },
+    "labels": [
+      "Email"
+    ],
+    "question_id": "mkt-004",
+    "rows": [
+      [
+        "Email",
+        6.0538
+      ]
+    ],
+    "scalar": null
+  },
+  "mkt-005": {
+    "columns": [
+      "channel",
+      "cost_per_click",
+      "roas"
+    ],
+    "facts": {
+      "channel": "Display",
+      "cost_per_click": 0.3895,
+      "roas": 0.8428
+    },
+    "labels": [
+      "Display"
+    ],
+    "question_id": "mkt-005",
+    "rows": [
+      [
+        "Display",
+        0.3895,
+        0.8428
+      ]
+    ],
+    "scalar": null
+  },
+  "mkt-006": {
+    "columns": [
+      "channel",
+      "ctr"
+    ],
+    "facts": {
+      "channel": [
+        "Email",
+        "Search",
+        "Affiliate",
+        "Social",
+        "Display"
+      ],
+      "ctr": [
+        0.07301,
+        0.05241,
+        0.04044,
+        0.02461,
+        0.00938
+      ]
+    },
+    "labels": [
+      "Email",
+      "Search",
+      "Affiliate",
+      "Social",
+      "Display"
+    ],
+    "question_id": "mkt-006",
+    "rows": [
+      [
+        "Email",
+        0.07301
+      ],
+      [
+        "Search",
+        0.05241
+      ],
+      [
+        "Affiliate",
+        0.04044
+      ],
+      [
+        "Social",
+        0.02461
+      ],
+      [
+        "Display",
+        0.00938
+      ]
+    ],
+    "scalar": null
+  },
+  "mkt-007": {
+    "columns": [
+      "variant",
+      "conversion_rate",
+      "conversions",
+      "clicks"
+    ],
+    "facts": {
+      "clicks": [
+        3982255,
+        3649686
+      ],
+      "conversion_rate": [
+        0.03792,
+        0.03153
+      ],
+      "conversions": [
+        151019,
+        115072
+      ],
+      "variant": [
+        "B",
+        "A"
+      ]
+    },
+    "labels": [
+      "B",
+      "A"
+    ],
+    "question_id": "mkt-007",
+    "rows": [
+      [
+        "B",
+        0.03792,
+        151019,
+        3982255
+      ],
+      [
+        "A",
+        0.03153,
+        115072,
+        3649686
+      ]
+    ],
+    "scalar": null
+  },
+  "mkt-008": {
+    "columns": [
+      "device",
+      "clicks",
+      "conversion_rate"
+    ],
+    "facts": {
+      "clicks": [
+        4802868,
+        2186363,
+        642710
+      ],
+      "conversion_rate": [
+        0.02868,
+        0.04659,
+        0.04118
+      ],
+      "device": [
+        "Mobile",
+        "Desktop",
+        "Tablet"
+      ]
+    },
+    "labels": [
+      "Mobile",
+      "Desktop",
+      "Tablet"
+    ],
+    "question_id": "mkt-008",
+    "rows": [
+      [
+        "Mobile",
+        4802868,
+        0.02868
+      ],
+      [
+        "Desktop",
+        2186363,
+        0.04659
+      ],
+      [
+        "Tablet",
+        642710,
+        0.04118
+      ]
+    ],
+    "scalar": null
+  },
+  "mkt-009": {
+    "columns": [
+      "audience_segment",
+      "roas"
+    ],
+    "facts": {
+      "audience_segment": "Interest",
+      "roas": 3.5699
+    },
+    "labels": [
+      "Interest"
+    ],
+    "question_id": "mkt-009",
+    "rows": [
+      [
+        "Interest",
+        3.5699
+      ]
+    ],
+    "scalar": null
+  },
+  "mkt-010": {
+    "columns": [
+      "month",
+      "spend"
+    ],
+    "facts": {
+      "month": "2024-03",
+      "spend": 1434954.06
+    },
+    "labels": [
+      "2024-03"
+    ],
+    "question_id": "mkt-010",
+    "rows": [
+      [
+        "2024-03",
+        1434954.06
+      ]
+    ],
+    "scalar": null
+  },
+  "mkt-011": {
+    "columns": [
+      "channel",
+      "clicks",
+      "ctr",
+      "conversion_rate",
+      "roas"
+    ],
+    "facts": {
+      "channel": "Display",
+      "clicks": 345929,
+      "conversion_rate": 0.0073,
+      "ctr": 0.00938,
+      "roas": 0.8428
+    },
+    "labels": [
+      "Display"
+    ],
+    "question_id": "mkt-011",
+    "rows": [
+      [
+        "Display",
+        345929,
+        0.00938,
+        0.0073,
+        0.8428
+      ]
+    ],
+    "scalar": null
+  },
+  "mkt-012": {
+    "columns": [
+      "variant",
+      "clicks",
+      "conversions",
+      "conversion_rate"
+    ],
+    "facts": {
+      "clicks": [
+        3649686,
+        3982255
+      ],
+      "conversion_rate": [
+        0.03153,
+        0.03792
+      ],
+      "conversions": [
+        115072,
+        151019
+      ],
+      "variant": [
+        "A",
+        "B"
+      ]
+    },
+    "labels": [
+      "A",
+      "B"
+    ],
+    "question_id": "mkt-012",
+    "rows": [
+      [
+        "A",
+        3649686,
+        115072,
+        0.03153
+      ],
+      [
+        "B",
+        3982255,
+        151019,
+        0.03792
+      ]
+    ],
+    "scalar": null
+  },
+  "mkt-013": {
+    "columns": [
+      "account_currency_distinct",
+      "data_source_distinct",
+      "attribution_window_distinct"
+    ],
+    "facts": {
+      "account_currency_distinct": 1,
+      "attribution_window_distinct": 1,
+      "data_source_distinct": 1
+    },
+    "labels": [
+      "1"
+    ],
+    "question_id": "mkt-013",
+    "rows": [
+      [
+        1,
+        1,
+        1
+      ]
+    ],
+    "scalar": null
+  },
+  "mkt-014": {
+    "columns": [
+      "notes_null_fraction",
+      "legacy_null_fraction"
+    ],
+    "facts": {
+      "legacy_null_fraction": 0.597,
+      "notes_null_fraction": 0.9458
+    },
+    "labels": [
+      "0.9458"
+    ],
+    "question_id": "mkt-014",
+    "rows": [
+      [
+        0.9458,
+        0.597
+      ]
+    ],
+    "scalar": null
+  },
+  "mkt-015": {
+    "columns": [
+      "total_conversions",
+      "total_conv",
+      "conv_to_conversions_ratio",
+      "rows_that_disagree"
+    ],
+    "facts": {
+      "conv_to_conversions_ratio": 0.8502,
+      "rows_that_disagree": 4842,
+      "total_conv": 226237,
+      "total_conversions": 266091
+    },
+    "labels": [
+      "266091"
+    ],
+    "question_id": "mkt-015",
+    "rows": [
+      [
+        266091,
+        226237,
+        0.8502,
+        4842
+      ]
+    ],
+    "scalar": null
+  },
+  "mkt-016": {
+    "columns": [
+      "mean_conversion_rate",
+      "mean_cvr",
+      "ratio"
+    ],
+    "facts": {
+      "mean_conversion_rate": 0.027969,
+      "mean_cvr": 2.7969,
+      "ratio": 100.0
+    },
+    "labels": [
+      "0.027969"
+    ],
+    "question_id": "mkt-016",
+    "rows": [
+      [
+        0.027969,
+        2.7969,
+        100.0
+      ]
+    ],
+    "scalar": null
+  },
+  "mkt-017": {
+    "columns": [
+      "rate_from_conversions",
+      "rate_from_conv",
+      "mean_of_conversion_rate",
+      "mean_of_cvr"
+    ],
+    "facts": {
+      "mean_of_conversion_rate": 0.02797,
+      "mean_of_cvr": 2.7969,
+      "rate_from_conv": 0.02964,
+      "rate_from_conversions": 0.03487
+    },
+    "labels": [
+      "0.03487"
+    ],
+    "question_id": "mkt-017",
+    "rows": [
+      [
+        0.03487,
+        0.02964,
+        0.02797,
+        2.7969
+      ]
+    ],
+    "scalar": null
+  },
+  "mkt-018": {
+    "columns": [
+      "latest_month",
+      "overall_cost_per_click"
+    ],
+    "facts": {
+      "latest_month": "2024-06",
+      "overall_cost_per_click": 0.9007
+    },
+    "labels": [
+      "2024-06"
+    ],
+    "question_id": "mkt-018",
+    "rows": [
+      [
+        "2024-06",
+        0.9007
+      ]
+    ],
+    "scalar": null
+  }
+}

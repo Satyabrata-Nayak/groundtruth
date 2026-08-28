@@ -546,3 +546,413 @@ The second rejects every table-valued function, including ones that do not exist
 **The transferable lesson:** knowing the principle is not the same as applying it
 everywhere it applies. I had written the allowlist argument into a design document and
 then implemented a blocklist two functions later, in the same file.
+
+---
+
+# M3 — tools and evaluation
+
+## 14. Does a fixed tool set cripple the model?
+
+This is the first question anyone asks about a tool-calling agent, and it deserves a
+real answer rather than reassurance.
+
+The worry is reasonable: if the model can only call six functions, surely it can only
+do six things? The resolution is that the six are not the same *kind* of thing.
+
+```
+execute_sql          GENERAL     any read-only SELECT
+                                 window functions, CTEs, self-joins, percentiles,
+                                 cohort analysis, CASE, date arithmetic...
+
+the other five       SPECIFIC    guard rails and shortcuts
+```
+
+So the action space is "everything expressible in SQL, plus five conveniences", not
+"six canned reports". Almost every analytical question an analyst asks of a single
+table is a SQL query, which is why `execute_sql` alone covers so much ground.
+
+### Then why have the other five at all?
+
+Because they refuse things *before* execution, in words a model can act on. Compare:
+
+```
+model calls  corr(region, revenue)          region is text
+
+raw SQL   -> DuckDB: "Binder Error: No function matches corr(VARCHAR, DOUBLE)"
+             a dead end. The model does not know what would have worked.
+
+our tool  -> "column 'region' is categorical (VARCHAR), but this tool needs a
+              numeric column. Suitable columns: order_id, revenue, cost, units"
+             a repair instruction. The next call is likely to be right.
+```
+
+They also enforce things a model writing its own SQL reliably forgets. `compare_groups`
+always returns the row count and share of total alongside each group, because *"North
+has the highest average order value"* is misleading when North has four orders — and a
+model asked for an average asks for an average.
+
+### Where the ceiling actually is
+
+Not at "six tools". At **what SQL cannot express**:
+
+```
+regression          fitting a line and reporting its confidence
+clustering          k-means, segmentation
+decomposition       separating trend from seasonality from noise
+significance        is this A/B difference real, or noise?
+```
+
+Those are M6, added as more tools backed by SciPy and scikit-learn. The architecture
+does not change; the list gets longer. What stays permanently excluded is *arbitrary
+model-written Python*, because that collapses "the model decides what" and "our code
+decides how" into one role, and every guarantee in this project rests on keeping them
+apart.
+
+### The cost of adding tools is not zero
+
+Each tool is another entry in the prompt and another chance to pick wrong. Selection
+accuracy on small models degrades as the list grows. That is why `detect_anomalies` is
+*not* in M3 despite being easy to write — it waits until there is an agent to measure
+it against.
+
+---
+
+## 15. Why the model's column name never reaches the SQL
+
+`execute_sql` is safe because the whole statement goes through the four-layer sandbox.
+But `compare_groups` **builds** SQL from arguments:
+
+```python
+f"SELECT {group_column} ... GROUP BY {group_column}"     # <- the classic disaster
+```
+
+The instinctive fix is to quote the identifier. That is the wrong fix, or rather an
+insufficient one. The actual fix is that **the model's string is never used**:
+
+```
+model sends   group_column = "Reveune"
+                     |
+                     v   resolve_column()  reads the LIVE schema
+                     |
+              matched to the real column  "revenue"
+                     |
+                     v
+SQL contains  "revenue"       <- our string, from DuckDB, not the model's
+```
+
+If the name matches nothing, nothing is built — the call returns an error listing the
+columns that exist, plus a `difflib` suggestion. So the injection surface is not
+"quoted incorrectly", it is *empty*: no path exists from the model's text to the query.
+
+This is the same shape as `storage.parse_dataset_id`, which turns an untrusted id into
+a UUID before it can become a path. Both are the pattern **validate by lookup, not by
+escaping** — and the difference matters, because escaping is a thing you can get subtly
+wrong, while substitution is a thing you either did or did not do.
+
+### The case-insensitivity is free
+
+Small models get casing wrong constantly. Since the canonical name is what proceeds,
+accepting `"REGION"` for `region` costs no safety whatsoever and removes a whole
+category of failure that teaches nothing.
+
+---
+
+## 16. Errors as values: why `call()` never raises
+
+Normal Python advice is to let exceptions propagate. This module does the opposite on
+purpose, and the reason is entirely about what happens in M5.
+
+The agent loop looks like:
+
+```
+model: "call compare_groups with metric_column='catgory'"
+  |
+  v  registry.call(...)
+  |
+  +-- raises  -> the run dies. One typo ends the analysis.
+  |
+  +-- returns ToolResult(ok=False, error="column 'catgory' does not exist.
+  |                                       Did you mean: category?")
+  |
+  v  feed that back into the conversation
+  |
+model: "call compare_groups with metric_column='category'"   <- recovered
+```
+
+The error message is not a log line. It is **the interface**, read by the model, and it
+is why every message in the tool layer names the valid alternatives instead of only
+stating what was wrong.
+
+### Three kinds of failure, kept apart
+
+```
+unknown tool name   the model is not working from the action space it was given.
+                    Not a slip — a sign the prompt or the tool list is wrong.
+
+bad arguments       a repairable mistake. Retry is likely to succeed.
+
+ToolError           a repairable semantic problem (wrong type, bad grouping).
+
+anything else       a bug in OUR code. Reported as "internal error", because
+                    inviting the model to retry it would loop forever.
+```
+
+Collapsing these into one generic error is exactly how an agent ends up retrying a call
+that cannot ever work.
+
+---
+
+## 17. Two audiences for one result: `model_view`
+
+A chart tool has a problem no other tool has. Its output has two consumers who need
+opposite things:
+
+```
+the browser   needs EVERY data point, or it cannot draw the chart
+the model     needs to know a chart was made, and roughly what it shows
+```
+
+Sending all the points to the model is not just wasteful, it is actively bad: a
+400-point scatter plot is about 3,000 tokens of context spent on numbers the model
+already computed in order to *request* the chart.
+
+Measured, on `create_chart(scatter, revenue, cost)` over 400 rows:
+
+```
+payload to the caller   11,325 characters      unchanged
+payload to the model         776 characters    14x smaller
+```
+
+The mechanism is a `Tool.model_view(data)` hook, identity for every tool except this
+one. `ToolResult` carries `data` (the caller's) and `model_data` (the model's), and
+`model_data` stays `None` when they are the same — so no other tool pays for the
+distinction.
+
+### The general principle
+
+"What we computed" and "what the model should see" are different questions. This is the
+first place they diverge; in M6 the verification layer will need the same split, since
+it must check claims against the *full* results, not the summarised ones.
+
+---
+
+## 18. Why the benchmark builds its own data
+
+This was the part I most expected to be pushed back on, so here is the argument in
+full.
+
+### The problem with a downloaded CSV
+
+Suppose we benchmark against a Kaggle sales dataset and ask *"which category has the
+highest profit margin?"*. What is the correct answer?
+
+Whatever the reference SQL returns. There is no independent fact to check it against.
+So the benchmark tests that DuckDB is deterministic — which it is, and which we knew.
+
+### Generating inverts the direction
+
+```
+downloaded:   data -> run SQL -> that IS the answer          (circular)
+generated:    decide the effect -> build data containing it -> the answer
+              exists before any query is written             (independent)
+```
+
+`ecommerce` is built so that **Q3 revenue rises while Q3 profit falls**, with two
+distinct causes: a low-margin category doubling its share, and the mean discount rising
+from 5% to 14%. That is a fact about the data decided in a config dict, and a question
+asking "why?" has a real answer that an analyst could reach and be graded against.
+
+### The generator is checked in; the CSV is not
+
+```
+a committed CSV        3.5 MB, opaque.  "why is West's margin low?" — nobody knows
+a committed generator  400 lines.        REGION_MARGIN_DELTA = {"West": -0.07}
+```
+
+The generator is the reviewable artefact. It also documents, in `planted_effects`,
+exactly what a competent analyst should be able to find — which is the specification
+the questions are written against.
+
+### The honest limitation
+
+**This measures regression, not generality.** It answers "did my change make it better
+or worse", which is the only question that matters while building. It does *not* answer
+"can this handle any dataset a stranger uploads" — that needs held-out real data, and
+it is an M6 item kept deliberately separate rather than quietly conflated.
+
+Three datasets rather than one, because a single shape tests a single skill:
+
+```
+ecommerce   14 clean columns    multi-step diagnosis
+marketing   44 messy columns    reading a schema carefully
+sensors     hourly readings     reasoning over time
+```
+
+---
+
+## 19. Verifying the instrument before trusting its readings
+
+The single most important thing in M3 is not the questions. It is that the scoreboard
+was calibrated against known inputs *before* any real agent existed.
+
+M1's lesson was blunt: five of six apparent "model failures" were bugs in my measuring
+harness. So M3 ships three stub agents whose scores are known in advance:
+
+```
+oracle        executes the question's own reference SQL       expect ~100%
+refusing      answers "I don't know", calls nothing           expect 0%
+schema-only   inspects the schema, writes a fluent answer
+              containing no computed number                   expect 0%
+```
+
+Measured:
+
+| stub | accuracy | values correct |
+|---|---|---|
+| oracle | 100% (48/48) | 100% |
+| refusing | 0% | 0% |
+| schema-only | 0% | 0% |
+
+The third one is the one that matters. It does real work and produces a confident,
+plausible, entirely uncomputed answer — the most realistic failure mode of a weak
+agent. **It scores zero.** That is the property that makes the number worth reporting.
+
+### It found six bugs immediately
+
+Running the oracle exposed five wording failures (`shipping_cost` required, but the
+answer said `null_shipping`; `variant b` required, but the answer said `variant = B`)
+and one real bug in the number extractor: its lookbehind rejected any digit preceded by
+a letter, so **`Q3` could never match quarter 3** — and quarters are exactly how a real
+answer refers to a quarter.
+
+Every one of those would have shown up later as "the agent is bad at data-quality
+questions".
+
+### The gap I could not close
+
+The `ambiguity` category grades "did the answer say which column it used". No stub that
+renders a result table produces that sentence, so **the oracle scores 0/2 there and the
+ceiling is unverified**. The honest response is to exclude those questions from headline
+accuracy and say so — not to reword the oracle until it passes its own check, which
+would make the calibration circular.
+
+---
+
+## 20. Grading free text against a number
+
+Ground truth is `0.1531`. A correct answer might say:
+
+```
+"15.31%"        "about 15%"       "0.1531"      "15.3 percent"
+"$1,234.56"     "2.5 million"     "15k"
+```
+
+A grader matching literal digits marks most correct answers wrong. And an
+under-reporting benchmark is *worse than none*: it sends you optimising a model that
+was already right.
+
+So numbers are extracted from prose and normalised — commas, currency symbols, `k`/`M`/
+`B` suffixes, percent signs — then compared within a relative tolerance the question
+declares.
+
+### The subtle part is percent
+
+`15.31%` and `0.1531` are the same quantity, so rescaling by 100 has to be allowed. But
+rescaling freely would mean an answer of `1` satisfies an expected value of `100`, which
+is a silent free pass on every large number. The rule:
+
+```
+token carried a % sign        -> try both 15.31 and 0.1531
+ground truth is a rate (<1)   -> try the answer / 100
+otherwise                     -> face value only
+```
+
+That last line is the one that keeps the scoreboard honest, and it has its own test.
+
+### Values and mentions are scored separately
+
+A diagnosis question fails in two different ways:
+
+```
+wrong numbers                        -> the query was wrong
+right numbers, no explanation        -> the analysis was not communicated
+```
+
+Collapsing both into one boolean loses the distinction exactly where it matters most,
+so `Grade` carries `values_correct` and `mentions_present` apart, and the report shows
+both. They also get fixed in different places — one needs a better query, the other
+needs a better prompt.
+
+`must_mention` accepts synonyms (`"differ|disagree|not the same"`) because requiring one
+chosen verb measures vocabulary rather than understanding. And it is counted only over
+questions that actually carry a requirement — counting the rest as passes made a stub
+that mentions nothing score 58%, which is a statistic about the question set, not about
+the agent.
+
+---
+
+## 21. Four bugs the data found that the code did not show
+
+Every one of these was invisible in the generator and obvious the moment the data was
+queried. This is why the generators have tests asserting their *effects*.
+
+**1. Three event dates, all off by one day.** I wrote "day 45 is 2024-05-15" by hand.
+April has 30 days, so day 45 is 16 May. All three sensor events were wrong. Every one
+of those dates is quoted in a golden question's reference SQL, so the queries would have
+run, returned the wrong window, and produced confidently incorrect "ground truth". The
+dates are now *derived* (`START + timedelta(days=SPIKE_DAY)`), never typed.
+
+**2. A column that was a perfect alias of another.** `AUDIENCES[index % 5]` and
+`CHANNELS[index % 5]` — both lists have five entries, so campaign *i* always paired
+audience *i* with channel *i*. `audience_segment` carried no independent information,
+and "which audience performs best?" was "which channel performs best?" in disguise. It
+surfaced because two unrelated questions returned the identical number, 6.0538.
+
+**3. A trap that was not a trap.** `ecom-005` asked for the *lowest*-margin category to
+catch a model reusing its previous answer — but the highest-revenue category (Electronics)
+*is* the lowest-margin one, so repeating yourself scored correct. Asking for the
+*highest* margin (Books) is what actually separates them.
+
+**4. A planted effect that did not fire.** `sens-010` was built on "the all-period
+average hides the fault". It did not: the drifting sensor edged out the genuinely hot
+one even over 90 days. Fixed in the data (raising the hot sensor's baseline and moving
+the dead-sensor fault onto a different unit so the two effects stay independent), not by
+softening the question.
+
+There is a fifth in the same family, found by the tool smoke test rather than the data:
+`compare_groups` accepted grouping by `order_id` — 400 groups of one row each — because
+the cardinality limit was an absolute 1,000 rather than *relative to row count*.
+Uniqueness is relative: 400 distinct values is fine in a million rows and meaningless in
+four hundred.
+
+**The pattern in all five:** the code was self-consistent and the intent was wrong.
+Nothing but querying the output would have shown it.
+
+---
+
+## 22. `connect_timeout`, and a skip-guard that could not skip
+
+The test suite has a fixture that skips integration tests when Postgres is unreachable:
+
+```python
+try:
+    with get_engine().connect() as conn:
+        conn.execute(text("SELECT 1"))
+except Exception:
+    pytest.skip("Postgres not available")
+```
+
+Correct logic, useless in practice. With Docker Desktop stopped, nothing is listening on
+port 5433, and a TCP connect to a dead port on Windows blocks for around 21 seconds
+before the OS gives up — per attempt. The suite did not skip; it hung, and looked like
+an infinite loop.
+
+The fix is one line of engine configuration:
+
+```python
+connect_args={"connect_timeout": settings.db_connect_timeout_s}   # 5 seconds
+```
+
+**The lesson:** a guard that depends on an operation *failing* has to specify how long
+it is willing to wait for that failure. "It will error out" is not a plan if the error
+takes 21 seconds and the default is to wait forever.

@@ -9,8 +9,9 @@ checked against a real computation.
 
 **Runs entirely on your own machine. No API keys, no cloud services, no cost.**
 
-> **Status: in active development.** The foundation, local model evaluation and
-> benchmark harness are complete; see the roadmap below.
+> **Status: in active development.** The data layer, the deterministic tool registry
+> and the 50-question evaluation set are complete and passing. The agent itself is
+> next — see the roadmap below.
 
 ---
 
@@ -95,6 +96,7 @@ correctness on your hardware. Results for the reference machine are in
 | [`docs/decisions.md`](docs/decisions.md) | every non-obvious choice, with alternatives and why they lost |
 | [`docs/learning-notes.md`](docs/learning-notes.md) | the concepts, explained — quantization, KV cache, tool calling, constrained decoding |
 | [`docs/benchmarking.md`](docs/benchmarking.md) | measured numbers, never estimated ones |
+| [`eval/`](eval/) | the golden question set, its generated datasets and the graded runner |
 
 ---
 
@@ -104,7 +106,7 @@ correctness on your hardware. Results for the reference machine are in
 |---|---|
 | **Foundation** | environment, PostgreSQL + migrations, local model evaluation — **done** |
 | **Data layer** | CSV/Parquet ingestion, profiling, sandboxed DuckDB SQL execution — **done** |
-| **Tools + evaluation** | deterministic tool registry, golden question set with hand-written reference SQL |
+| **Tools + evaluation** | deterministic tool registry, golden question set with hand-written reference SQL — **done** |
 | **Application** | FastAPI, durable PostgreSQL job queue, web UI |
 | **Agent** | tool-calling loop, execution trace, graded continuously against the evaluation set |
 | **Verification** | numeric claim verification, charts, statistics, anomaly detection, performance benchmarks |
@@ -112,6 +114,23 @@ correctness on your hardware. Results for the reference machine are in
 Deliberate ordering: the data layer and the evaluation set are built **before** the
 agent, so the AI is added to a system already proven to work without it — and there is
 a scoreboard to develop it against from the first commit.
+
+### The scoreboard is calibrated before it is used
+
+A benchmark reporting 62% means nothing unless you know it reads 100% for a perfect
+answer and 0% for a worthless one. Three stub agents establish that, and they run today:
+
+| stub agent | accuracy | what it proves |
+|---|---|---|
+| `oracle` — executes each question's reference SQL | **100%** | the ceiling is reachable |
+| `refusing` — answers "I don't know" | **0%** | saying nothing earns nothing |
+| `schema-only` — fluent answer, no computed numbers | **0%** | **sounding right earns nothing** |
+
+```bash
+python -m eval.build                    # generate data, compute ground truth
+python -m eval.runner --agent oracle    # 50 questions, scored by category
+python -m eval.build --check            # CI: fail if any expected answer moved
+```
 
 ## Reference hardware
 

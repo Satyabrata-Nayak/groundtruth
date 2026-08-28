@@ -1,7 +1,7 @@
 # Architecture
 
-Current state: **data layer complete, no AI yet**. This document describes the target
-and marks what exists today.
+Current state: **data layer and tool/evaluation layer complete, no AI yet**. This
+document describes the target and marks what exists today.
 
 ---
 
@@ -32,7 +32,7 @@ evidence-backed result showing every step it took.
         · execution events                  │      │
         · verified claims                   │      └── Ollama ──> qwen3  [M1 ✓]
                                             │           (native, GPU)
-                                            ├── Tool registry       [M3]
+                                            ├── Tool registry    [M3 ✓]
                                             │      · inspect_schema
                                             │      · execute_sql
                                             │      · profile_column
@@ -47,6 +47,9 @@ evidence-backed result showing every step it took.
                                             └── Verification layer   [M6]
 
        data/datasets/<dataset-id>/<version>/data.parquet   — immutable   [M2]
+
+       eval/  50 golden questions, 3 generated datasets, graded runner   [M3 ✓]
+              scored against the SAME tool registry the agent will use
 ```
 
 **Legend:** ✓ done · [Mn] arrives in that milestone.
@@ -100,7 +103,7 @@ backend maps that to a trusted path.
 
 ---
 
-## What exists after M2
+## What exists after M3
 
 ```
 app/config.py              typed settings from .env, single source of truth
@@ -113,11 +116,28 @@ app/data/ingest.py         validate, CSV->Parquet, immutable versioning
 app/data/profile.py        row/column stats, exact null and distinct counts, flags
 app/data/sandbox.py        four-layer read-only SQL executor
 app/data/service.py        create/list/get/delete — the operations the API will call
+
+app/tools/base.py          Tool, ToolContext, ToolResult, ToolRegistry. THE CONTRACT.
+app/tools/_common.py       resolve_column — a model's column name never reaches SQL
+app/tools/inspect.py       inspect_schema, profile_column
+app/tools/query.py         execute_sql — the general tool
+app/tools/stats.py         compare_groups, correlation (Pearson + Spearman)
+app/tools/chart.py         create_chart — a validated spec, never a rendered image
+
+eval/datasets/             seeded generators: ecommerce, marketing, sensors
+eval/questions/*.yaml      50 golden questions with hand-written reference SQL
+eval/answers/*.json        ground truth, COMPUTED by running that SQL
+eval/suite.py              loads and validates the question set
+eval/expected.py           computes ground truth through the sandbox
+eval/grader.py             number extraction, tolerance, ranking, must_mention
+eval/agents.py             oracle / refusing / schema-only — scale calibration
+eval/runner.py             scores an agent, reports by category
+eval/build.py              regenerate everything; --check fails on drift
+
 docker-compose.yml         Postgres 16 on host port 5433, health-checked
 scripts/bench_model.py     the M1 deliverable: measures the model choice
-scripts/bench_report.py    renders raw runs into the docs comparison table
-tests/                     139 tests, incl. a 30-query SQL attack corpus
-docs/                      decisions D-001..D-014, learning notes, benchmarking
+tests/                     262 tests, incl. a 30-query SQL attack corpus
+docs/                      decisions D-001..D-021, learning notes, benchmarking
 ```
 
 **Model selected: `qwen3:4b`, reasoning enabled** (D-006, D-009). Measured 53.8 tok/s
@@ -125,8 +145,14 @@ fully GPU-resident, 100% on JSON planning, tool selection, tool arguments and SQ
 correctness. `qwen3:8b` matched every capability metric but ran 5.7x slower because it
 cannot fit alongside a KV cache and spills 38% of its layers to system RAM.
 
-Deliberately absent: FastAPI, any HTTP route, any agent tool, any LLM client in `app/`.
-M2's job was to make deterministic analysis correct before any AI exists.
+Deliberately absent: FastAPI, any HTTP route, any LLM client in `app/`. M2's job was
+to make deterministic analysis correct before any AI exists; M3's was to define what
+the AI will be allowed to do, and to build the scoreboard it will be developed against.
+
+**The scoreboard is calibrated.** Three stub agents bracket its scale before any real
+agent exists — `oracle` (executes the reference SQL) scores 100%, `refusing` scores 0%,
+and `schema-only` (fluent, confident, no computed numbers) also scores 0%. A future
+score of 62% therefore sits on a scale whose endpoints were measured, not assumed.
 
 ---
 
@@ -154,3 +180,69 @@ M2's job was to make deterministic analysis correct before any AI exists.
 
 Measured end to end on a 5,000-row dataset: ingest + profile + persist, then a
 grouped profit-margin query returning in ~11 ms.
+
+---
+
+## The M3 tool path, as built
+
+```
+  model proposes            {"name": "compare_groups",
+                             "arguments": {"group_column": "Reveune", ...}}
+        |
+        v  ToolRegistry.call()
+        |
+        +-- unknown tool?     -> ToolResult(ok=False, "Available tools: ...")
+        |
+        v  schema validation  types, enums, bounds, no undeclared keys
+        |
+        +-- bad arguments?    -> ToolResult(ok=False, "must be integer, got boolean")
+        |
+        v  Tool.execute(ToolContext(dataset_id, version), **cleaned)
+        |     |
+        |     v  resolve_column("Reveune")  -> looked up in the LIVE schema
+        |     |
+        |     +-- no match?   -> ToolResult(ok=False, "Did you mean: revenue?")
+        |     |
+        |     v  SQL built from the CANONICAL name, never the model's string
+        |     v  app.data.sandbox.execute_sql   (the same four layers as always)
+        |
+        v  Tool.model_view(data)     trims what re-enters the context window
+        |
+   ToolResult(ok, data, model_data, summary, duration_ms)
+        |
+        +--> caller / browser   gets `data`        (every chart point)
+        +--> the model          gets `model_data`  (a 12-point summary)
+```
+
+`ToolContext` carries `dataset_id` and `version`. Neither appears in any tool's JSON
+schema, so the model cannot name a dataset — it is told which one it is looking at.
+
+---
+
+## The M3 evaluation path, as built
+
+```
+  eval/datasets/*.py          seeded generators, committed
+        |
+        v  python -m eval.build
+        |
+        v  generate CSV -> service.create_dataset -> registered in Postgres
+        |
+        v  execute each question's reference_sql THROUGH THE SANDBOX
+        |     (so a question the agent could not answer fails here, not later)
+        |
+   eval/answers/*.json         ground truth, committed and diffable
+        |
+        v  python -m eval.runner --agent <name>
+        |
+        v  for each question: agent.answer(question, context, registry)
+        |
+        v  grader: extract numbers from prose, normalise, compare within tolerance
+        |          check ranking order, check must_mention concepts
+        |
+   accuracy / values / mentions / tool calls, broken down by category
+```
+
+`python -m eval.build --check` recomputes ground truth and exits non-zero if it moved,
+naming every question affected. That is what turns a generator edit from a silent
+change into a reviewed one.

@@ -23,7 +23,23 @@ data/datasets/
 *.parquet
 *.duckdb
 *.duckdb.wal
-!eval/questions/**/*.parquet
+
+# --- Evaluation data (M3) ---
+# The CSVs are DERIVED: `python -m eval.build` regenerates them byte-for-byte from the
+# seeded generators in eval/datasets/, which ARE committed. Committing 3.5 MB of data
+# that a 400-line generator reproduces exactly would add weight and no information --
+# and the generator is the artefact worth reviewing, because it states which effects
+# were deliberately built in.
+eval/data/
+
+# The dataset ids are UUIDs minted on whichever machine ran the build, so this file
+# means nothing anywhere else. Recreated by `python -m eval.build`.
+eval/answers/registry.json
+
+# NOTE: eval/answers/*.json IS committed on purpose. It is the ground truth every
+# benchmark score is measured against, and keeping it in the repo is what makes a
+# generator change show up as a reviewable diff of exactly which answers moved,
+# rather than as a silently different score.
 
 # --- Internal working documents (not project documentation) ---
 # These describe how the work is being planned and learned, not how the system works.

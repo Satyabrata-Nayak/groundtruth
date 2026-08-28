@@ -1,0 +1,274 @@
+{
+  "sens-001": {
+    "columns": [
+      "readings"
+    ],
+    "facts": {
+      "readings": 17280
+    },
+    "labels": [
+      "17280"
+    ],
+    "question_id": "sens-001",
+    "rows": [
+      [
+        17280
+      ]
+    ],
+    "scalar": 17280
+  },
+  "sens-002": {
+    "columns": [
+      "sensors",
+      "first_day",
+      "last_day"
+    ],
+    "facts": {
+      "first_day": "2024-04-01",
+      "last_day": "2024-06-29",
+      "sensors": 8
+    },
+    "labels": [
+      "8"
+    ],
+    "question_id": "sens-002",
+    "rows": [
+      [
+        8,
+        "2024-04-01",
+        "2024-06-29"
+      ]
+    ],
+    "scalar": null
+  },
+  "sens-003": {
+    "columns": [
+      "machine_type",
+      "avg_temperature"
+    ],
+    "facts": {
+      "avg_temperature": 56.4,
+      "machine_type": "Compressor"
+    },
+    "labels": [
+      "Compressor"
+    ],
+    "question_id": "sens-003",
+    "rows": [
+      [
+        "Compressor",
+        56.4
+      ]
+    ],
+    "scalar": null
+  },
+  "sens-004": {
+    "columns": [
+      "alarm_readings"
+    ],
+    "facts": {
+      "alarm_readings": 6
+    },
+    "labels": [
+      "6"
+    ],
+    "question_id": "sens-004",
+    "rows": [
+      [
+        6
+      ]
+    ],
+    "scalar": 6
+  },
+  "sens-005": {
+    "columns": [
+      "hour_of_day",
+      "avg_temperature"
+    ],
+    "facts": {
+      "avg_temperature": 48.82,
+      "hour_of_day": 14
+    },
+    "labels": [
+      "14"
+    ],
+    "question_id": "sens-005",
+    "rows": [
+      [
+        14,
+        48.82
+      ]
+    ],
+    "scalar": null
+  },
+  "sens-006": {
+    "columns": [
+      "period",
+      "avg_vibration"
+    ],
+    "facts": {
+      "avg_vibration": [
+        2.271,
+        1.023
+      ],
+      "period": [
+        "weekday",
+        "weekend"
+      ]
+    },
+    "labels": [
+      "weekday",
+      "weekend"
+    ],
+    "question_id": "sens-006",
+    "rows": [
+      [
+        "weekday",
+        2.271
+      ],
+      [
+        "weekend",
+        1.023
+      ]
+    ],
+    "scalar": null
+  },
+  "sens-007": {
+    "columns": [
+      "before_drift",
+      "final_ten_days"
+    ],
+    "facts": {
+      "before_drift": 53.98,
+      "final_ten_days": 60.6
+    },
+    "labels": [
+      "53.98"
+    ],
+    "question_id": "sens-007",
+    "rows": [
+      [
+        53.98,
+        60.6
+      ]
+    ],
+    "scalar": null
+  },
+  "sens-008": {
+    "columns": [
+      "sensor_id",
+      "early_period",
+      "late_period",
+      "change"
+    ],
+    "facts": {
+      "change": 6.62,
+      "early_period": 53.98,
+      "late_period": 60.6,
+      "sensor_id": "S-07"
+    },
+    "labels": [
+      "S-07"
+    ],
+    "question_id": "sens-008",
+    "rows": [
+      [
+        "S-07",
+        53.98,
+        60.6,
+        6.62
+      ]
+    ],
+    "scalar": null
+  },
+  "sens-009": {
+    "columns": [
+      "sensor_id",
+      "event_day",
+      "peak_vibration"
+    ],
+    "facts": {
+      "event_day": "2024-05-16",
+      "peak_vibration": 12.685,
+      "sensor_id": "S-03"
+    },
+    "labels": [
+      "S-03"
+    ],
+    "question_id": "sens-009",
+    "rows": [
+      [
+        "S-03",
+        "2024-05-16",
+        12.685
+      ]
+    ],
+    "scalar": null
+  },
+  "sens-010": {
+    "columns": [
+      "hottest_all_period",
+      "hottest_final_two_weeks"
+    ],
+    "facts": {
+      "hottest_all_period": "S-05",
+      "hottest_final_two_weeks": "S-07"
+    },
+    "labels": [
+      "S-05"
+    ],
+    "question_id": "sens-010",
+    "rows": [
+      [
+        "S-05",
+        "S-07"
+      ]
+    ],
+    "scalar": null
+  },
+  "sens-011": {
+    "columns": [
+      "sensor_id",
+      "rows",
+      "readings_with_temperature",
+      "missing_fraction"
+    ],
+    "facts": {
+      "missing_fraction": 0.1667,
+      "readings_with_temperature": 1800,
+      "rows": 2160,
+      "sensor_id": "S-02"
+    },
+    "labels": [
+      "S-02"
+    ],
+    "question_id": "sens-011",
+    "rows": [
+      [
+        "S-02",
+        2160,
+        1800,
+        0.1667
+      ]
+    ],
+    "scalar": null
+  },
+  "sens-012": {
+    "columns": [
+      "last_reading_day"
+    ],
+    "facts": {
+      "last_reading_day": "2024-06-14"
+    },
+    "labels": [
+      "2024-06-14"
+    ],
+    "question_id": "sens-012",
+    "rows": [
+      [
+        "2024-06-14"
+      ]
+    ],
+    "scalar": "2024-06-14"
+  }
+}
