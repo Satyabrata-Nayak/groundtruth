@@ -22,7 +22,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 class ColumnOut(BaseModel):
@@ -69,6 +69,12 @@ class DatasetOut(BaseModel):
     created_at: datetime
     versions: list[VersionOut] = Field(default_factory=list)
 
+    # `computed_field`, not a bare `@property`. Pydantic serialises only declared
+    # fields and computed ones, so as a plain property this was documented in the class,
+    # invisible in the JSON and absent from the OpenAPI schema — the frontend read
+    # `dataset.latest_version` and silently got undefined. A property that callers are
+    # meant to see has to say so.
+    @computed_field
     @property
     def latest_version(self) -> int | None:
         return max((v.version for v in self.versions), default=None)

@@ -333,3 +333,14 @@ def test_cancelling_a_finished_analysis_reports_its_real_status(client, dataset)
 
 def test_cancelling_something_that_does_not_exist_is_a_not_found(client):
     assert client.post(f"/analyses/{uuid.uuid4()}/cancel").status_code == 404
+
+
+def test_latest_version_is_actually_in_the_json(client, dataset):
+    """It was declared as a bare @property, so pydantic never serialised it: documented
+    in the class, absent from the response, and `undefined` in the frontend."""
+    body = client.get("/datasets").json()[0]
+    assert body["latest_version"] == 1
+    assert (
+        "latest_version"
+        in client.get("/openapi.json").json()["components"]["schemas"]["DatasetOut"]["properties"]
+    )
