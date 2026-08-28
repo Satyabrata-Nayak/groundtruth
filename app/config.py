@@ -6,10 +6,12 @@ you which variables the app actually needs. Here, config is declared once, typed
 validated at import time — a missing or malformed value fails immediately and loudly.
 """
 
+from __future__ import annotations
+
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -56,6 +58,49 @@ class Settings(BaseSettings):
     # first 50 rows did not.
     max_tool_result_rows: int = 50
     max_chart_categories: int = 50
+
+    # --- API (M4) ---
+    # The Vite dev server runs on a different origin than the API, so the browser
+    # applies CORS. Stored as a comma-separated string rather than list[str] because
+    # pydantic-settings parses complex types from the environment as JSON, and
+    # CORS_ORIGINS='["http://localhost:5173"]' in a .env file is a trap nobody enjoys.
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+
+    # --- Job queue and worker (M4) ---
+    # How long a worker sleeps when it finds no work. Short enough to feel instant in
+    # the UI, long enough that an idle worker is not hammering Postgres.
+    worker_poll_interval_s: float = 1.0
+    # A running worker refreshes analyses.heartbeat_at at this interval...
+    worker_heartbeat_interval_s: float = 5.0
+    # ...and any RUNNING row whose heartbeat is older than this is presumed orphaned by
+    # a crashed worker and is requeued. The gap between the two is the whole safety
+    # margin: too tight and a GC pause steals a live job from a healthy worker.
+    worker_heartbeat_timeout_s: float = 30.0
+    # A job that has been claimed this many times without finishing is failed rather
+    # than requeued forever. Attempts are counted at claim time, so a crash counts.
+    analysis_max_attempts: int = 3
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @model_validator(mode="after")
+    def _heartbeat_timeout_exceeds_interval(self) -> Settings:
+        """The reclaim threshold must be several beats away from the beat interval.
+
+        If the timeout were only one interval long, a single slow beat — a GC pause, a
+        blocked write, a laptop suspending for four seconds — would let another worker
+        reclaim a job that is still running, and the same analysis would execute twice.
+        Three intervals means three consecutive misses before anything is presumed dead.
+        """
+        if self.worker_heartbeat_timeout_s < self.worker_heartbeat_interval_s * 3:
+            raise ValueError(
+                "worker_heartbeat_timeout_s must be at least 3x "
+                "worker_heartbeat_interval_s, or a healthy worker's job can be stolen "
+                f"after one missed beat (got timeout={self.worker_heartbeat_timeout_s}s, "
+                f"interval={self.worker_heartbeat_interval_s}s)"
+            )
+        return self
 
     @property
     def database_url(self) -> str:

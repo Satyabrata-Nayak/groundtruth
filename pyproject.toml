@@ -20,6 +20,16 @@ dependencies = [
     "sqlglot>=30.17",          # parse SQL to an AST so the executor can ALLOWLIST
                                # (root node must be SELECT/WITH) instead of blocklisting
                                # keywords, which comments and nesting defeat.
+
+    # M4 — the HTTP surface. No task queue library appears here on purpose: the job
+    # queue is Postgres (SELECT ... FOR UPDATE SKIP LOCKED), so Celery and Redis would
+    # add two runtime services to solve a problem the database already solves. See D-022.
+    "fastapi>=0.115",          # typed request/response models reuse the pydantic already
+                               # present, and OpenAPI is generated rather than written.
+    "uvicorn[standard]>=0.30",  # ASGI server. [standard] adds httptools + uvloop-equivalent
+                               # and, on Windows, the watchfiles reloader.
+    "python-multipart>=0.0.9",  # multipart/form-data parsing; FastAPI refuses to start a
+                                # route with UploadFile without it.
 ]
 
 [project.optional-dependencies]

@@ -6,6 +6,7 @@ database is reachable and migrated) are asserted rather than assumed.
 """
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import create_engine, text
 
 from app.config import Settings, get_settings
@@ -41,3 +42,31 @@ def test_database_is_reachable_and_migrated():
         assert conn.execute(text("SELECT 1")).scalar_one() == 1
         count = conn.execute(text("SELECT count(*) FROM alembic_version")).scalar_one()
         assert count == 1, f"expected exactly one migration head, found {count}"
+
+
+# --------------------------------------------------------------- M4 settings
+
+
+def test_cors_origins_parse_from_a_comma_separated_string():
+    """Stored as a string, not list[str]. pydantic-settings parses complex types from
+    the environment as JSON, and CORS_ORIGINS='["http://..."]' in a .env file is a trap
+    that fails at import with an opaque message."""
+    settings = Settings(cors_origins="http://a.test, http://b.test ,")
+    assert settings.cors_origin_list == ["http://a.test", "http://b.test"]
+
+
+def test_a_heartbeat_timeout_too_close_to_the_interval_is_refused():
+    """The reclaim threshold must be several beats away from the beat interval.
+
+    At one interval, a single slow beat -- a GC pause, a blocked write, a laptop
+    suspending for four seconds -- lets the sweep reclaim a job that is still running,
+    and the same analysis executes twice. Catching that as a config error at import
+    beats catching it as a race in production.
+    """
+    with pytest.raises(ValidationError, match="at least 3x"):
+        Settings(worker_heartbeat_interval_s=5.0, worker_heartbeat_timeout_s=6.0)
+
+
+def test_the_default_heartbeat_settings_satisfy_their_own_rule():
+    settings = Settings()
+    assert settings.worker_heartbeat_timeout_s >= settings.worker_heartbeat_interval_s * 3

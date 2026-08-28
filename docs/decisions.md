@@ -654,3 +654,179 @@ targets *plausible nonsense* rather than crashes: a line chart on an unordered c
 
 **Tradeoffs.** `model_view` is a second payload shape for any tool that overrides it.
 Only `create_chart` does, and `ToolResult.model_data` stays `None` everywhere else.
+
+---
+
+## D-022 — The job queue is a Postgres table, not Celery and Redis
+
+**Decision.** `analyses` is the queue. Workers claim rows with
+`UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING`. No
+broker, no result backend, no second stateful service.
+
+**Why.** The reflex is to reach for Celery. Look at what it would actually add here:
+
+```
+Celery + Redis     a broker to run, monitor and back up; a result backend that is a
+                   SECOND store the analysis lives in; a task id that is not the
+                   thing the user asked about
+Postgres queue     one table, one transaction, already backed up, and the queue row
+                   IS the analysis -- question, status, result and audit trail
+```
+
+The hard part of a queue is not delivery, it is *exactly-once claiming*, and Postgres
+has solved that since 9.5. `SKIP LOCKED` is the specific primitive: it takes a row lock
+and walks past rows another transaction already holds, instead of blocking on them. Two
+workers polling in the same millisecond get two different jobs and neither waits.
+
+The claim is one statement on purpose. `SELECT` then `UPDATE` leaves a window between
+them where another transaction can interleave; the single statement locates, locks and
+mutates atomically.
+
+This is not "Postgres scales forever". At a few thousand jobs a second the polling loop
+becomes the bottleneck and a broker earns its keep. This system runs one local model on
+one laptop, so that number is not in view, and the cost of being wrong is one afternoon
+to swap the implementation behind `app/jobs/queue.py`.
+
+**Tradeoffs.** Polling costs one indexed query per worker per second. A partial index
+(`WHERE status = 'PENDING'`) keeps that query proportional to the backlog rather than to
+history. No fan-out, no priorities, no scheduled tasks — none of which M5 needs.
+
+---
+
+## D-023 — Liveness is a heartbeat, and every terminal write is guarded by worker identity
+
+**Decision.** A running worker refreshes `heartbeat_at` every 5 s from a background
+thread. A sweep requeues any RUNNING row whose heartbeat is older than 30 s. Every write
+that finishes a job carries `AND worker_id = :me AND status = 'RUNNING'`.
+
+**Why.** Requeueing an orphaned job is the easy half, and doing only that half creates a
+worse bug than the one it fixes:
+
+```
+12:00:00  worker A claims #7
+12:00:31  A is paused -- long GC, suspended laptop -- and misses its heartbeats
+12:00:35  the sweep decides A is dead and requeues #7
+12:00:36  worker B claims #7 and starts over
+12:00:40  A wakes up, finishes, and writes its result
+```
+
+Without the guard, A's write lands on a row B now owns. With it, A's UPDATE matches zero
+rows and is silently a no-op — correct, because A was, as far as the system is
+concerned, dead. The worker treats a rejected write as "my result is unwanted" and drops
+it. That is the counter-intuitive part and the reason it is stated here.
+
+The timeout must be several beats wide, and `app/config.py` refuses to start if it is
+not (`>= 3 x` the interval). At one beat, a single slow write hands a live worker's job
+to somebody else.
+
+The beat runs on its own thread rather than between analysis steps because a single step
+is exactly when liveness matters most — one M5 model call is 10-60 s of silence. The
+same round trip also reads back `cancel_requested`, so one query answers "am I alive",
+"do I still own this" and "does anyone still want it".
+
+Attempts are counted at *claim* time, not completion. A job that kills its worker has
+still consumed an attempt, and after `analysis_max_attempts` the sweep fails it instead
+of feeding it another worker forever.
+
+**Tradeoffs.** One UPDATE per worker per 5 s, and a job whose worker dies is invisible
+for up to 30 s. Shortening the timeout trades recovery latency for the risk of stealing
+live work; 30 s was chosen because it is longer than any GC pause and shorter than a
+user's patience.
+
+---
+
+## D-024 — Cancellation is a request to the worker, not a status change
+
+**Decision.** `POST /analyses/{id}/cancel` cancels a PENDING job outright. For a RUNNING
+job it sets `cancel_requested` and returns RUNNING; the worker notices at its next
+heartbeat and moves the row to CANCELLED itself.
+
+**Why.** The API cannot stop the work. The worker owns the DuckDB connection, the open
+Parquet file and, in M5, an in-flight model call. Writing CANCELLED from the API would
+produce a row that says cancelled while a process is still computing a result for it —
+and that result would then arrive, guard or no guard, as a confusing event trail.
+
+Returning RUNNING is deliberate honesty. The alternative is to report CANCELLED
+immediately and have the client believe something that is not yet true. One heartbeat
+interval later it is true, and the status endpoint says so.
+
+**Tradeoffs.** Up to one beat interval of latency, and a UI that must tolerate
+"cancelling" as a state between the request and the fact.
+
+---
+
+## D-025 — POST /analyses is idempotent by key, and answers 200 or 201 to say which
+
+**Decision.** The request may carry an `idempotency_key`. The insert is
+`ON CONFLICT (idempotency_key) DO NOTHING RETURNING id`; a key that already exists
+returns the existing analysis with **200** instead of **201**.
+
+**Why.** A dropped connection after the server committed is indistinguishable, from the
+client's side, from a request that never arrived. Without a key the only safe options
+are "retry and risk a duplicate job" or "do not retry and risk losing the request".
+
+Check-then-insert does not solve it: two retries can both find nothing and both insert,
+and one of them then fails on the unique index — turning a successful retry into a 500.
+`ON CONFLICT` lets the database decide atomically, and the loser reads what the winner
+wrote.
+
+The status code is the useful half. 201 means "this is new"; 200 means "your first
+attempt already landed, here it is". A client can tell those apart without guessing.
+
+**Tradeoffs.** A key is optional, so a client that omits it gets no protection. The
+column is nullable and unique — Postgres permits many NULLs in a unique index, which is
+exactly the behaviour wanted.
+
+---
+
+## D-026 — The M4 analysis is hardcoded, and produces the exact result shape M5 must fill
+
+**Decision.** The worker runs a fixed sequence — `inspect_schema`, then
+`compare_groups`, then `create_chart` — with no model anywhere. Its output is
+`{engine, question, dataset, answer, steps[], table, chart}`.
+
+**Why.** Two arguments.
+
+*Isolating the failure.* If a model went in now, every broken thing would have two
+candidate causes, and the boring one (the plumbing) would be blamed on the interesting
+one (the model), or worse, the reverse. With a deterministic analysis, anything that
+fails is the plumbing, and there is no argument about it.
+
+*Fixing the contract while it is cheap.* That result shape is stored in a JSONB column,
+serialised by a pydantic model, and rendered by a React component. Getting it wrong now
+means changing three layers later. Getting it right now means M5 replaces one function.
+`engine` is stored with the result so a row from M4 stays interpretable next to an
+`agent-v1` row forever.
+
+It goes through `ToolRegistry.call` rather than running SQL directly, which is how M4
+proves the M3 action space works end to end while there is still no model around to
+confuse the picture.
+
+**Tradeoffs.** The analysis is not an answer to the question, and both the answer text
+and the UI say so plainly rather than implying otherwise.
+
+---
+
+## D-027 — The UI is unstyled React, and the API is polled rather than pushed
+
+**Decision.** Five unstyled components in `frontend/`, Vite dev server proxying to the
+API. The result view polls `GET /analyses/{id}/events?after=<cursor>` once a second.
+
+**Why unstyled.** M4's job is to surface API design flaws while they are still cheap to
+fix. It already worked: the events endpoint returns `status` alongside the events
+because building the polling component made it obvious that a UI needing both would
+otherwise issue two requests per tick and have to reconcile them disagreeing.
+
+**Why polling.** A websocket needs connection state, reconnection logic, and a way to
+replay what was missed while disconnected. The event cursor gives replay for free — a
+client asks for everything after the highest id it has seen — and each poll costs an
+indexed lookup. At M6, if a live cursor is genuinely wanted, the cursor semantics are
+already the right shape for SSE.
+
+`setTimeout` chained after each response, never `setInterval`: an interval fires on
+schedule regardless of whether the last request returned, so one slow response stacks
+requests and the event list flickers backwards.
+
+**Tradeoffs.** Up to one second of latency on a status change, and a poll per second per
+open tab. Both are irrelevant at this scale and neither survives contact with a real
+deployment, which is a M6 problem.

@@ -103,12 +103,13 @@ backend maps that to a trusted path.
 
 ---
 
-## What exists after M3
+## What exists after M4
 
 ```
 app/config.py              typed settings from .env, single source of truth
 app/db/base.py             DeclarativeBase
-app/db/models.py           Dataset, DatasetVersion, ColumnProfile
+app/db/models.py           Dataset, DatasetVersion, ColumnProfile,
+                           Analysis, AnalysisEvent  <- the M4 job queue
 app/db/session.py          engine, pooled connections, transactional session_scope
 app/db/migrations/         Alembic, URL injected from app.config
 app/data/storage.py        dataset_id -> path. THE TRUST BOUNDARY.
@@ -124,6 +125,20 @@ app/tools/query.py         execute_sql — the general tool
 app/tools/stats.py         compare_groups, correlation (Pearson + Spearman)
 app/tools/chart.py         create_chart — a validated spec, never a rendered image
 
+app/jobs/queue.py          claim / heartbeat / reclaim / finish. FOR UPDATE SKIP LOCKED.
+app/worker/loop.py         the worker process: claim, run, record, repeat
+app/worker/heartbeat.py    a background beat that also reads back "still wanted?"
+app/worker/analysis.py     M4's hardcoded analysis — the shape M5 must fill
+app/worker/__main__.py     `python -m app.worker`
+app/api/main.py            FastAPI app, CORS, domain-error handlers, /healthz
+app/api/deps.py            per-request transaction; why the endpoints are sync `def`
+app/api/schemas.py         the published contract, decided rather than inherited
+app/api/routes/            datasets.py, analyses.py
+
+frontend/src/App.jsx       five unstyled components, one piece of state each way
+frontend/src/api.js        every call to the backend, and the only place errors parse
+frontend/src/Result.jsx    cursor polling with setTimeout, never setInterval
+
 eval/datasets/             seeded generators: ecommerce, marketing, sensors
 eval/questions/*.yaml      50 golden questions with hand-written reference SQL
 eval/answers/*.json        ground truth, COMPUTED by running that SQL
@@ -136,8 +151,9 @@ eval/build.py              regenerate everything; --check fails on drift
 
 docker-compose.yml         Postgres 16 on host port 5433, health-checked
 scripts/bench_model.py     the M1 deliverable: measures the model choice
-tests/                     262 tests, incl. a 30-query SQL attack corpus
-docs/                      decisions D-001..D-021, learning notes, benchmarking
+tests/                     335 tests, incl. a 30-query SQL attack corpus and a
+                           crash drill that hard-kills a real worker process
+docs/                      decisions D-001..D-027, learning notes, benchmarking
 ```
 
 **Model selected: `qwen3:4b`, reasoning enabled** (D-006, D-009). Measured 53.8 tok/s
@@ -145,9 +161,11 @@ fully GPU-resident, 100% on JSON planning, tool selection, tool arguments and SQ
 correctness. `qwen3:8b` matched every capability metric but ran 5.7x slower because it
 cannot fit alongside a KV cache and spills 38% of its layers to system RAM.
 
-Deliberately absent: FastAPI, any HTTP route, any LLM client in `app/`. M2's job was
-to make deterministic analysis correct before any AI exists; M3's was to define what
-the AI will be allowed to do, and to build the scoreboard it will be developed against.
+Deliberately absent: **any LLM client in `app/`.** Three milestones in, nothing in the
+application talks to a model. M2 made deterministic analysis correct, M3 defined what a
+model will be allowed to do and built the scoreboard it will be developed against, and
+M4 built the entire request path around a hardcoded analysis — so that when the model
+arrives in M5, anything that breaks is the model.
 
 **The scoreboard is calibrated.** Three stub agents bracket its scale before any real
 agent exists — `oracle` (executes the reference SQL) scores 100%, `refusing` scores 0%,
@@ -246,3 +264,94 @@ schema, so the model cannot name a dataset — it is told which one it is lookin
 `python -m eval.build --check` recomputes ground truth and exits non-zero if it moved,
 naming every question affected. That is what turns a generator edit from a silent
 change into a reviewed one.
+
+---
+
+## The M4 request path, as built
+
+Two processes, one database, and nothing slow inside an HTTP request.
+
+```
+  browser
+    │
+    │ POST /analyses  {dataset_id, question}
+    ▼
+  FastAPI ──────────────────────────────────────────────┐
+    │  resolve the dataset version and PIN it            │  ~4 ms
+    │  INSERT one row, status = PENDING                  │  no analysis here
+    │  201 {id, status: "PENDING"}                       │
+    └───────────────────────────────────────────────────┘
+    │
+    │                        ┌──────────── Postgres ────────────┐
+    │                        │  analyses          (the queue)   │
+    │                        │  analysis_events   (the trail)   │
+    │                        └──────────────────────────────────┘
+    │                                     ▲
+    │                                     │  UPDATE ... WHERE id = (
+    │                                     │      SELECT id ... FOR UPDATE
+    │                                     │      SKIP LOCKED LIMIT 1)
+    │                                     │  RETURNING ...
+    │                                     │
+    │                        ┌──────── python -m app.worker ────┐
+    │                        │  claim  (PENDING -> RUNNING)     │
+    │                        │    │                             │
+    │                        │    ├─ heartbeat thread, 5 s ─────┼─► "alive?"
+    │                        │    │                             │   "still mine?"
+    │                        │    │                             │   "still wanted?"
+    │                        │    ▼                             │
+    │                        │  run_analysis                    │
+    │                        │    inspect_schema                │
+    │                        │    compare_groups   ── M3 tools ─┼─► DuckDB sandbox
+    │                        │    create_chart                  │
+    │                        │    │                             │
+    │                        │    ▼                             │
+    │                        │  succeed | fail | cancelled      │
+    │                        │  ...or LOST: write nothing       │
+    │                        └──────────────────────────────────┘
+    │
+    │ GET /analyses/{id}/events?after=<cursor>     every 1 s
+    ▼
+  {events: [...], next_after: 384, status: "SUCCEEDED"}
+```
+
+**Every terminal write carries `AND worker_id = :me AND status = 'RUNNING'.'** That one
+clause is what makes crash recovery safe: a worker that was reclaimed while it was slow
+finds its UPDATE matches zero rows, and drops a perfectly good result rather than
+writing a second, conflicting story about the same row.
+
+**The status travels with the events** so a polling client makes one request per tick
+rather than two — and never has to reconcile a trail and a status read a few
+milliseconds apart.
+
+---
+
+## The M4 state machine
+
+```
+                 POST /analyses
+                       │
+                       ▼
+                   ┌────────┐  cancel  ┌───────────┐
+                   │PENDING ├─────────►│ CANCELLED │
+                   └───┬────┘          └───────────┘
+        claim_next()   │                     ▲
+   FOR UPDATE SKIP     │                     │ worker sees the flag
+        LOCKED         ▼                     │ at its next heartbeat
+                   ┌────────┐                │
+        ┌──────────┤RUNNING ├────────────────┘
+        │          └───┬────┘
+        │              │
+  heartbeat goes       ├──────────────► SUCCEEDED   result written
+  stale for 30 s       │
+        │              └──────────────► FAILED      reason written
+        │
+        ├── attempts <  max  ──► back to PENDING   (worker_id cleared)
+        └── attempts >= max  ──► FAILED            "abandoned after N attempts"
+```
+
+Nothing moves a row *out* of a terminal state. That is what makes "the result is final"
+true rather than hoped for.
+
+Attempts are counted at **claim** time, not completion, so a job that kills its worker
+has still consumed an attempt — otherwise a poison job is retried until it has killed
+every worker you own.

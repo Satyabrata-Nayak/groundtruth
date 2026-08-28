@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from enum import StrEnum
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -33,13 +35,25 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
-__all__ = ["Base", "Dataset", "DatasetVersion", "ColumnProfile"]
+__all__ = [
+    "Analysis",
+    "AnalysisEvent",
+    "AnalysisStatus",
+    "Base",
+    "ColumnProfile",
+    "Dataset",
+    "DatasetVersion",
+    "EventKind",
+    "TERMINAL_STATUSES",
+]
 
 
 class Dataset(Base):
@@ -164,3 +178,193 @@ class ColumnProfile(Base):
     # side was missing, which SQLAlchemy reports only at first mapper use — not at import,
     # and not by any linter.
     version: Mapped[DatasetVersion] = relationship(back_populates="columns")
+
+
+# ================================================================================
+# M4 — the job queue
+# ================================================================================
+#
+# WHY A JOB LIVES IN POSTGRES AND NOT IN THE WEB PROCESS
+# -----------------------------------------------------
+# An analysis will, in M5, spend 10-60 seconds calling a local model. Doing that
+# inside the HTTP request means the browser holds a connection open for a minute,
+# any reverse proxy times it out, a page refresh loses the work, and a restart
+# loses every in-flight request. So the request only WRITES A ROW; a separate
+# process picks it up. That row is the queue.
+#
+# WHY NOT CELERY / REDIS / RQ
+# ---------------------------
+# Those need a second stateful service, and they hand back a task id that is not
+# the thing the user asked about. Here the queue row IS the analysis: the same row
+# carries the question, the status the UI polls, the result, and the audit trail.
+# One store, one transaction, one thing to back up. Postgres already provides the
+# hard part — row-level locks and SKIP LOCKED — and the whole claim is one
+# statement. See D-022.
+
+
+class AnalysisStatus(StrEnum):
+    """The states an analysis can be in.
+
+    Terminal states are SUCCEEDED, FAILED and CANCELLED. A worker only ever moves a
+    row out of PENDING or RUNNING; nothing moves a row out of a terminal state, which
+    is what makes "the result is final" true rather than hoped for.
+    """
+
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+TERMINAL_STATUSES = frozenset(
+    {AnalysisStatus.SUCCEEDED, AnalysisStatus.FAILED, AnalysisStatus.CANCELLED}
+)
+
+
+class EventKind(StrEnum):
+    """What kind of thing happened. Deliberately a small, closed vocabulary.
+
+    In M5 these become the agent's observable trace. Note what is absent: there is no
+    THOUGHT kind. Chain-of-thought is not persisted — it is unverifiable narration, and
+    storing it would invite the UI to present a model's self-description as evidence.
+    Only things that actually happened get a row.
+    """
+
+    QUEUED = "QUEUED"
+    CLAIMED = "CLAIMED"
+    RECLAIMED = "RECLAIMED"
+    TOOL_CALL = "TOOL_CALL"
+    TOOL_RESULT = "TOOL_RESULT"
+    NOTE = "NOTE"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class Analysis(Base):
+    """One question asked of one dataset version: the queue row and the answer.
+
+    WHY THE VERSION IS PINNED HERE
+    ------------------------------
+    `dataset_version` is stored, not looked up at run time. A dataset can gain a new
+    version between the question being asked and the worker picking it up, and an
+    answer computed against v2 while the user was looking at v1 is wrong in the worst
+    way — it is plausible. Pinning also makes the analysis re-runnable to the same
+    numbers later, which is the entire reason M2 made versions immutable.
+    """
+
+    __tablename__ = "analyses"
+    __table_args__ = (
+        # Status is a CHECK-constrained string rather than a native Postgres ENUM.
+        # Native enums are genuinely awkward to evolve: ALTER TYPE ... ADD VALUE cannot
+        # run in the same transaction that then uses the new value, so a migration that
+        # adds a state and backfills rows with it needs two migrations. A CHECK
+        # constraint is one ALTER TABLE and gives the same guarantee.
+        CheckConstraint(
+            "status IN ('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED')",
+            name="ck_analyses_status",
+        ),
+        # THE CLAIM INDEX. The worker's claim query filters status='PENDING' and orders
+        # by created_at. A partial index holds only pending rows, so it stays small
+        # forever no matter how many finished analyses accumulate behind it — what a
+        # worker scans is proportional to the backlog, not to history.
+        Index(
+            "ix_analyses_pending",
+            "created_at",
+            postgresql_where=text("status = 'PENDING'"),
+        ),
+        # THE RECLAIM INDEX, by the same argument, for the sweep that finds analyses
+        # whose worker died.
+        Index(
+            "ix_analyses_running_heartbeat",
+            "heartbeat_at",
+            postgresql_where=text("status = 'RUNNING'"),
+        ),
+        Index("ix_analyses_dataset_id", "dataset_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    dataset_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False
+    )
+    dataset_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # A caller-supplied key that makes POST /analyses safe to retry. Unique, and
+    # nullable: Postgres permits many NULLs in a unique index, so callers that do not
+    # care are not forced to invent one. See D-024.
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), unique=True)
+
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=AnalysisStatus.PENDING, server_default="PENDING"
+    )
+
+    # --- claim bookkeeping ---
+    # Incremented when a worker CLAIMS the row, not when one finishes it. A worker that
+    # is killed mid-analysis has still consumed an attempt, which is what stops a job
+    # that reliably kills its worker from being retried forever.
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    worker_id: Mapped[str | None] = mapped_column(String(128))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set by the API; read by the worker at each checkpoint. A flag rather than a direct
+    # status write, because only the process actually running the work can stop it
+    # cleanly and report where it stopped.
+    cancel_requested: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
+    # --- timing ---
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # --- outcome ---
+    # JSONB, not JSON: it is stored parsed, so it can be indexed and queried later
+    # without re-parsing text on every read. The shape is the one M5 will also produce
+    # — an answer, the steps that produced it, and the evidence — so replacing the
+    # hardcoded analysis with a model-driven one does not change this contract.
+    result: Mapped[dict | None] = mapped_column(JSONB)
+    error: Mapped[str | None] = mapped_column(Text)
+
+    events: Mapped[list[AnalysisEvent]] = relationship(
+        back_populates="analysis",
+        cascade="all, delete-orphan",
+        order_by="AnalysisEvent.id",
+    )
+
+
+class AnalysisEvent(Base):
+    """One observable thing that happened while an analysis ran.
+
+    WHY THE PRIMARY KEY IS A SEQUENCE AND NOT A PER-ANALYSIS COUNTER
+    ---------------------------------------------------------------
+    The obvious design is `seq = max(seq) + 1` per analysis. That is a read-then-write
+    race: two writers both read 4 and both write 5. It happens to be safe today because
+    exactly one worker owns a running analysis — but "safe because of an invariant
+    enforced somewhere else" is how races get shipped.
+
+    A BIGINT identity column is allocated by Postgres from a sequence, is monotonic, and
+    needs no coordination. It also doubles as the polling cursor: the UI asks for
+    `?after=<last id it saw>` and can neither miss an event nor see one twice.
+    """
+
+    __tablename__ = "analysis_events"
+    __table_args__ = (Index("ix_analysis_events_analysis_id", "analysis_id", "id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    analysis_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("analyses.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    analysis: Mapped[Analysis] = relationship(back_populates="events")

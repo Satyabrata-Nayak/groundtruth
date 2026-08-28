@@ -38,7 +38,7 @@ Three design commitments, in order of importance:
 | Analytics | DuckDB over Parquet | SQL is a surface the model can emit and we can *validate* — see [D-001](docs/decisions.md) |
 | Metadata + job queue | PostgreSQL | `FOR UPDATE SKIP LOCKED` gives a durable queue without Redis |
 | LLM | Qwen3 via Ollama | local, GPU-accelerated, free |
-| Frontend | React + TypeScript + Vite | |
+| Frontend | React + Vite | unstyled at M4 on purpose — it exists to surface API design flaws, not to look finished |
 | Env | uv | fast, reproducible lockfile |
 
 Not used, deliberately: LangChain, Redis, a vector database, Kubernetes, cloud storage,
@@ -76,15 +76,46 @@ ollama serve                   # if not already running
 ollama pull qwen3:4b
 ```
 
-### 4. Verify
+### 4. Frontend
 
 ```bash
-.venv/Scripts/python.exe scripts/bench_model.py qwen3:4b
+cd frontend && npm install
+```
+
+### 5. Verify the model
+
+```bash
+uv run python scripts/bench_model.py qwen3:4b
 ```
 
 This measures latency, structured-output validity, tool-calling reliability and SQL
 correctness on your hardware. Results for the reference machine are in
 [`docs/benchmarking.md`](docs/benchmarking.md).
+
+---
+
+## Running it
+
+Three processes. The split is the point: the API answers in milliseconds because it
+never does the work.
+
+```bash
+uv run uvicorn app.api.main:app --reload    # http://127.0.0.1:8000  (docs at /docs)
+uv run python -m app.worker                 # claims jobs from Postgres and runs them
+cd frontend && npm run dev                  # http://localhost:5173
+```
+
+Then: upload a CSV, select it, ask a question, and watch the status go
+`PENDING -> RUNNING -> SUCCEEDED` with the tool calls appearing as they happen.
+
+The worker is safe to kill at any point. Its job is reclaimed and finished by the next
+one — there is a test that hard-kills a real worker process to prove it
+(`tests/test_worker_recovery.py`).
+
+> **M4 does not answer your question yet.** The worker runs a *fixed* analysis: it
+> compares the first usable numeric column across the first usable categorical one. The
+> question is stored and pinned to a dataset version, and M5 replaces one function to
+> answer it for real. The UI says so too, rather than implying otherwise.
 
 ---
 
@@ -107,7 +138,7 @@ correctness on your hardware. Results for the reference machine are in
 | **Foundation** | environment, PostgreSQL + migrations, local model evaluation — **done** |
 | **Data layer** | CSV/Parquet ingestion, profiling, sandboxed DuckDB SQL execution — **done** |
 | **Tools + evaluation** | deterministic tool registry, golden question set with hand-written reference SQL — **done** |
-| **Application** | FastAPI, durable PostgreSQL job queue, web UI |
+| **Application** | FastAPI, durable PostgreSQL job queue, web UI — **done** |
 | **Agent** | tool-calling loop, execution trace, graded continuously against the evaluation set |
 | **Verification** | numeric claim verification, charts, statistics, anomaly detection, performance benchmarks |
 
@@ -131,6 +162,36 @@ python -m eval.build                    # generate data, compute ground truth
 python -m eval.runner --agent oracle    # 50 questions, scored by category
 python -m eval.build --check            # CI: fail if any expected answer moved
 ```
+
+### The queue survives a killed worker
+
+The job queue is one Postgres table. No Celery, no Redis — `FOR UPDATE SKIP LOCKED`
+already solves the hard part, and the queue row *is* the analysis: same row, same
+transaction, one thing to back up.
+
+```sql
+UPDATE analyses SET status = 'RUNNING', worker_id = :me, attempts = attempts + 1
+WHERE id = (SELECT id FROM analyses WHERE status = 'PENDING'
+            ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1)
+RETURNING ...;
+```
+
+One statement, so there is no window between locating a job and claiming it. Two
+workers polling in the same millisecond get two different jobs and neither blocks.
+
+A running worker heartbeats every 5 s; anything quiet for 30 s is requeued. The clause
+that makes that *safe* is on every terminal write:
+
+```sql
+... WHERE id = :id AND worker_id = :me AND status = 'RUNNING'
+```
+
+A worker that was merely slow, got reclaimed, and then finished finds its UPDATE matches
+zero rows — so it drops a perfectly good result instead of overwriting the worker that
+took over. `tests/test_worker_recovery.py` spawns a real worker, kills the process
+outright, and asserts the job is reclaimed and completed.
+
+---
 
 ## Reference hardware
 

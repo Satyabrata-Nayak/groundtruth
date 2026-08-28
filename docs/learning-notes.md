@@ -623,7 +623,7 @@ it against.
 But `compare_groups` **builds** SQL from arguments:
 
 ```python
-f"SELECT {group_column} ... GROUP BY {group_column}"     # <- the classic disaster
+f"SELECT {group_column} ... GROUP BY {group_column}"  # <- the classic disaster
 ```
 
 The instinctive fix is to quote the identifier. That is the wrong fix, or rather an
@@ -950,9 +950,330 @@ an infinite loop.
 The fix is one line of engine configuration:
 
 ```python
-connect_args={"connect_timeout": settings.db_connect_timeout_s}   # 5 seconds
+connect_args = {"connect_timeout": settings.db_connect_timeout_s}  # 5 seconds
 ```
 
 **The lesson:** a guard that depends on an operation *failing* has to specify how long
 it is willing to wait for that failure. "It will error out" is not a plan if the error
 takes 21 seconds and the default is to wait forever.
+
+---
+
+## 23. `SKIP LOCKED`, and the race you cannot see in a single-threaded test
+
+Two workers poll the queue in the same millisecond. Both run:
+
+```sql
+SELECT id FROM analyses WHERE status = 'PENDING' ORDER BY created_at LIMIT 1;
+UPDATE analyses SET status = 'RUNNING' WHERE id = :id;
+```
+
+Both read row #7. Both mark it RUNNING. The question is answered twice, and in M5 the
+model is invoked twice for one answer on a laptop that can barely afford one.
+
+What made this click was that the obvious fixes are each wrong in an instructive way:
+
+```
+a global lock            correct, and the queue is now single-file: workers stop
+                         being workers and become a queue of one
+SELECT ... FOR UPDATE    correct, but worker B BLOCKS on A's lock waiting for a row
+                         it does not want. Under load everyone queues behind the
+                         first row in the table.
+optimistic retry         correct, and every worker does throwaway work in proportion
+                         to how many workers there are
+```
+
+`FOR UPDATE SKIP LOCKED` is different in kind: it takes the lock, and where a row is
+already locked by another transaction it *walks past it* instead of waiting. B does not
+block on A. B gets row #8.
+
+The second half is that the claim must be ONE statement:
+
+```sql
+UPDATE analyses SET status = 'RUNNING', worker_id = :me, attempts = attempts + 1
+WHERE id = (
+    SELECT id FROM analyses WHERE status = 'PENDING'
+    ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1
+)
+RETURNING id, dataset_id, dataset_version, question, attempts;
+```
+
+Select-then-update leaves a window between the two statements. One statement has no
+window, and `RETURNING` hands back exactly what was written.
+
+**The part I had to build to believe.** A test that claims twice in sequence passes
+against a completely broken queue. The only test that observes the bug opens two real
+sessions and claims in both *before either commits* — which is what
+`test_two_workers_claiming_at_once_get_different_jobs` does. It is also why this cannot
+be tested against SQLite: `SKIP LOCKED`, row-level locks and partial indexes are the
+things under test, and a fake would only test the fake.
+
+---
+
+## 24. The heartbeat is the easy half; the ownership guard is the half that matters
+
+A worker dies. Its job sits in RUNNING forever. Obvious fix: have workers stamp a
+`heartbeat_at`, and sweep anything that has gone quiet back to PENDING.
+
+That is half a solution, and shipping only that half creates a worse bug than the one it
+fixes:
+
+```
+12:00:00  worker A claims #7
+12:00:31  A pauses -- long GC, laptop suspended, disk stall -- and misses beats
+12:00:35  the sweep decides A is dead, requeues #7
+12:00:36  worker B claims #7 and starts over
+12:00:40  A wakes up, finishes, and writes its result
+```
+
+A is not dead. It was slow. Now two workers write results for one analysis, and which
+one survives depends on scheduling.
+
+The fix is that a worker's identity is part of every terminal write:
+
+```sql
+UPDATE analyses SET status = 'SUCCEEDED', result = :result
+WHERE id = :id AND worker_id = :me AND status = 'RUNNING';
+```
+
+A's UPDATE matches zero rows. `succeed()` returns False, and the worker logs that its
+result was rejected and *drops it*. Discarding a correct result computed from good data
+is the right behaviour, and it took me a while to be comfortable with that: another
+worker owns the story of that row now, and a second story is worse than none.
+
+Three details that follow from the same reasoning:
+
+- **The timeout must be several beats wide.** At one beat, one slow write hands a live
+  worker's job away. `app/config.py` refuses to start if
+  `worker_heartbeat_timeout_s < 3 x worker_heartbeat_interval_s` — a config error caught
+  at import beats a race caught in production.
+- **Time comes from the database.** Every `now()` is evaluated by Postgres. If workers
+  stamped their own clocks, a few seconds of skew between two machines would either
+  resurrect live jobs or never reclaim dead ones.
+- **Attempts are counted at claim, not at completion.** A job that reliably kills its
+  worker has still consumed an attempt. Otherwise it is retried forever, taking a worker
+  with it each time.
+
+---
+
+## 25. Why the beat needs its own thread and its own session
+
+The tempting design is to heartbeat between analysis steps. It is simpler and it fails
+in exactly the case that matters: one step can be the slow one. An M5 model call is
+10-60 seconds of silence, and that is precisely when the worker most needs to be saying
+"still alive". Beating between steps makes the gap between beats equal to the duration
+of the longest step.
+
+So the beat runs on a background thread at a fixed interval, independent of what the
+work is doing.
+
+Two things I had to get right:
+
+**Its own session.** A SQLAlchemy `Session` is not thread-safe. Two threads sharing one
+interleave statements on a single DBAPI connection and corrupt transaction state in ways
+that surface as unrelated errors much later. The thread opens its own short transaction
+per beat, from the same process-wide pool.
+
+**It listens as well as speaks.** The same UPDATE that stamps the timestamp returns
+`cancel_requested`, and fails to match if the row was reclaimed. One round trip answers
+three questions:
+
+```
+did the UPDATE match?          -> do I still own this job
+what did it return?            -> does anyone still want the answer
+did it happen?                 -> yes, and the timestamp is refreshed
+```
+
+The thread sets flags; the analysis polls them at `checkpoint()` between steps. It does
+not raise across the thread boundary, because an exception raised in the beat thread
+could not interrupt the work anyway — pretending otherwise would hide the fact that the
+work only stops at checkpoints.
+
+---
+
+## 26. Four outcomes, not two
+
+I started writing `process()` with try/except/else — succeeded or failed — and it was
+wrong. A worker has four things that can happen to it:
+
+```
+succeeded          write the result
+AnalysisFailed     write the reason; the user asked something that cannot be answered
+cancelled          write CANCELLED; someone asked it to stop
+lost ownership     write NOTHING
+```
+
+The fourth is always forgotten, and its correct behaviour is the one that looks like a
+bug: say nothing at all. Another worker owns this analysis now. It is also why
+`StopRequested` carries a `reason` rather than being two exception classes — the worker
+has to *distinguish* "stop and report" from "stop and be quiet", and a single flag at
+the raise site is where that decision belongs.
+
+There is a fifth case that is not the worker's: an unexpected exception. That is a bug
+in us, and it gets `internal error: RuntimeError: ...` with the type name, so a
+maintainer can tell it apart from a bad question at a glance.
+
+---
+
+## 27. Why long work must not run inside an HTTP request
+
+Stated plainly because it is the thing M4 exists to demonstrate.
+
+```
+POST /analyses  --> run the analysis --> return the answer     (60 seconds)
+POST /analyses  --> INSERT one row   --> return an id          (4 milliseconds)
+```
+
+The first version fails in five ways that have nothing to do with each other:
+
+1. The browser holds a connection open for a minute, and so does a worker process.
+2. Every proxy in the path applies its own idea of a timeout. A cloud load balancer's
+   default is 60 seconds, and it will cut the connection mid-answer.
+3. A page refresh abandons work that is still running and cannot be found again.
+4. Restarting the API loses every request in flight.
+5. Nothing can report progress, because nothing has committed yet — an uncommitted row
+   is invisible to every other session.
+
+Point 5 is the one I had not thought through, and it shaped the worker: **each event is
+written in its own short transaction**. Doing the whole analysis in one transaction
+would leave the trail invisible until the very end, so the UI would show nothing for a
+minute and then everything at once. Short transactions are what make the trail live
+rather than retrospective.
+
+The same argument says the analysis must run *outside* the claiming transaction.
+Otherwise the claim's row lock and its pooled connection are held for the entire
+analysis. The heartbeat is what replaces the lock as the liveness signal.
+
+---
+
+## 28. Idempotency: making a retry safe to send
+
+A client POSTs, the server commits, the connection drops before the response arrives.
+From the client's side that is indistinguishable from a request that never arrived.
+Retry and you may get two analyses; do not retry and you may get none.
+
+An idempotency key fixes it, but only if the insert is atomic:
+
+```python
+# WRONG: two retries can both find nothing and both insert. One then dies on the
+# unique index -- a successful retry turned into a 500.
+if not session.scalar(select(Analysis).where(Analysis.idempotency_key == key)):
+    session.add(Analysis(...))
+
+# RIGHT: the database decides, once.
+pg_insert(Analysis).values(...).on_conflict_do_nothing(
+    index_elements=[Analysis.idempotency_key]
+).returning(Analysis.id)
+```
+
+If nothing comes back, somebody else won; read their row and return it.
+
+The part worth copying is the **status code**. 201 means "this is new"; 200 means "your
+first attempt already landed, here it is". A client can tell those apart without
+guessing, which is the whole point of the pattern.
+
+Also: the column is nullable AND unique. Postgres permits many NULLs in a unique index,
+so callers that do not care are not forced to invent a key.
+
+---
+
+## 29. Four bugs the output showed and the code did not — again
+
+M3's lesson repeated itself exactly. The first end-to-end run succeeded, and its answer
+was nonsense:
+
+> The largest total **order_id** is in region = **None** at 4410927, **0.3528%** of the
+> total
+
+Three bugs in one sentence, and a fourth hiding behind the first fix.
+
+**1. It summed the primary key.** I had assumed `inspect_schema` would flag an
+identifier. It does not: `is_high_cardinality` is only computed for *categorical*
+columns, because a numeric column with many distinct values is usually a measurement.
+So `order_id` arrived unflagged and was the first numeric column in position order.
+
+**2. The fix for #1 rejected every float.** "Distinct values ≈ row count means
+identifier" is right for `order_id` and wrong for `revenue` — a continuous measurement
+over 5,000 rows also has ~5,000 distinct values. Ratios measured on the real data:
+`revenue` 0.97, `cost` 0.96, `unit_price` 0.90, all above my 0.9 threshold. The
+analysis silently downgraded to whichever small-range integer survived, which is the
+harder kind of wrong to notice because the output stops being absurd.
+
+The discriminator is the *type*: near-uniqueness implies an identifier only for
+integers. Nobody stores a primary key as a DOUBLE.
+
+**3. `region = None`.** `compare_groups` keys the group label as `"group"`, not as the
+column's name, so `top[group_column]` was always `None` — printed directly above a table
+whose first row said `West`. An error would have been better; this looked like an
+answer.
+
+**4. `0.3528%`.** `share_of_total` is `value / total` — a fraction. Appending `%`
+understated it a hundredfold, and 0.35% is a plausible-looking number, which is exactly
+why it survived.
+
+The pattern, for the third milestone running: **the code was self-consistent and my
+assumption about someone else's payload was wrong.** Reading the tool's actual output
+found all four in about a minute. Reading the code found none of them. Each now has a
+named regression test in `tests/test_worker.py`, which opens with the list.
+
+---
+
+## 30. Small things that were not obvious
+
+**`except X as e` deletes `e` at the end of the block.** Ruff (F821) caught this:
+
+```python
+except AnalysisFailed as failure:
+    self._write(claimed, lambda s: queue.fail(s, ..., str(failure)))  # NameError risk
+```
+
+Python unbinds the exception name when the `except` block exits, so any closure
+capturing it is a latent `NameError` — waiting for the one path that defers the call.
+Bind to a plain string first.
+
+**`Depends()` in a default argument is a live object built at import time.** FastAPI
+accepts it; ruff flags it (B008); and it breaks the moment the function is called
+outside FastAPI, as a test would. `Annotated[Session, Depends(get_session)]` puts the
+dependency in the *type*, where it describes rather than defaults.
+
+**A partial index keeps a queue's cost proportional to its backlog.**
+
+```sql
+CREATE INDEX ix_analyses_pending ON analyses (created_at) WHERE status = 'PENDING';
+```
+
+Only pending rows are in it. A million finished analyses do not slow the claim down by a
+single page read.
+
+**A CHECK constraint beats a native Postgres ENUM for a status column.**
+`ALTER TYPE ... ADD VALUE` cannot run in the same transaction that then uses the new
+value, so adding a state and backfilling rows with it needs two migrations. A CHECK
+constraint is one `ALTER TABLE` and gives the same guarantee.
+
+**`autoincrement` beats `max(seq) + 1`.** Event ordering could have been a per-analysis
+counter. That is a read-then-write race: two writers read 4, both write 5. It happens to
+be safe today because one worker owns a running analysis — but "safe because of an
+invariant enforced somewhere else" is how races ship. A BIGINT identity column is
+allocated by a sequence, needs no coordination, and doubles as the polling cursor.
+
+**`setTimeout` chained after each response, not `setInterval`.** An interval fires on
+schedule regardless of whether the previous request returned, so one slow response
+stacks requests, they arrive out of order, and the event list flickers backwards.
+Chaining means never more than one request in flight and the gap measured from the
+*reply* — which is what "poll every second" always meant.
+
+**React's `StrictMode` double-invokes effects on purpose.** It is not a nuisance to
+switch off: it is what proves the polling effect cleans up after itself. An effect that
+leaks a timer works fine without StrictMode and leaks one poll per mount with it.
+
+**A worker left running in another terminal will eat your tests.** Two concurrency tests
+passed alone and failed in the full suite. The cause was not a race in the code: I had
+`python -m app.worker` still running from a manual demo, and it was polling the same
+database the tests use, claiming their PENDING rows out from under them within a second.
+
+The queue was behaving *exactly* as designed — a worker claims available work, and it
+has no way to know some of that work belongs to a test. The lesson is about the test
+environment, not the queue: a shared database plus a background consumer means test
+isolation is no longer something the test file can guarantee on its own. Worth
+remembering before debugging a "flaky" concurrency test for an hour. The real fix, if
+this recurs, is a dedicated test database rather than a cleverer fixture.
